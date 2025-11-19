@@ -20,10 +20,9 @@ index 220eaa526a8b65a3894079e4f62820de972456d7..e9c42aab23301ad0d0e0b689f98997c2
  	
  	public static void load() throws IOException {
 -		File configFile = new File("pufferfish.yml");
--		saveRequired = !configFile.exists(); // Purpur
 +		File configFile = pufferfishFile != null ? pufferfishFile : new File("pufferfish.yml"); // Purpur
-+		saveRequired = !configFile.exists(); // Purpur
-				if (configFile.exists()) {
+ 		
+ 		if (configFile.exists()) {
  			try {
 diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
 index bed0267d42a8dbbd2996bd19c65d09a5ab27b5d2..582467e3419c23446b20d3076fbfce22115250a8 100644
