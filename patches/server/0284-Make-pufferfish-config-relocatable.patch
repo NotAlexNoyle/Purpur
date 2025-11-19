@@ -5,25 +5,25 @@ Subject: [PATCH] Make pufferfish config relocatable
 
 
 diff --git a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
-index 5c691db595ee412b77f729e90172bc4f8ae57226..47e77541e558e18758ae0fcc2aa4e47261e928b6 100644
+index 220eaa526a8b65a3894079e4f62820de972456d7..e9c42aab23301ad0d0e0b689f98997c2474048d9 100644
 --- a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
 +++ b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
-@@ -28,6 +28,7 @@ public class PufferfishConfig {
- 	
- 	private static final YamlFile config = new YamlFile();
+@@ -29,6 +29,7 @@ public class PufferfishConfig {
  	private static int updates = 0;
+ 	private static boolean saveRequired; // Purpur
 +	public static File pufferfishFile; // Purpur
  	
  	private static ConfigurationSection convertToBukkit(org.simpleyaml.configuration.ConfigurationSection section) {
  		ConfigurationSection newSection = new MemoryConfiguration();
-@@ -50,7 +51,7 @@ public class PufferfishConfig {
+@@ -50,8 +51,8 @@ public class PufferfishConfig {
  	}
  	
  	public static void load() throws IOException {
 -		File configFile = new File("pufferfish.yml");
-+		File configFile = pufferfishFile; // Purpur
- 		
- 		if (configFile.exists()) {
+-		saveRequired = !configFile.exists(); // Purpur
++		File configFile = pufferfishFile != null ? pufferfishFile : new File("pufferfish.yml"); // Purpur
++		saveRequired = !configFile.exists(); // Purpur
+				if (configFile.exists()) {
  			try {
 diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServer.java
 index bed0267d42a8dbbd2996bd19c65d09a5ab27b5d2..582467e3419c23446b20d3076fbfce22115250a8 100644
