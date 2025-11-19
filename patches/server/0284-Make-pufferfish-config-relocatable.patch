@@ -8,10 +8,9 @@ diff --git a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java b/src/
 index 5c691db595ee412b77f729e90172bc4f8ae57226..47e77541e558e18758ae0fcc2aa4e47261e928b6 100644
 --- a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
 +++ b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
-@@ -28,6 +28,7 @@ public class PufferfishConfig {
- 	
- 	private static final YamlFile config = new YamlFile();
+@@ -29,6 +29,7 @@ public class PufferfishConfig {
  	private static int updates = 0;
+ 	private static boolean saveRequired; // Purpur
 +	public static File pufferfishFile; // Purpur
  	
  	private static ConfigurationSection convertToBukkit(org.simpleyaml.configuration.ConfigurationSection section) {
@@ -21,7 +20,7 @@ index 5c691db595ee412b77f729e90172bc4f8ae57226..47e77541e558e18758ae0fcc2aa4e472
  	
  	public static void load() throws IOException {
 -		File configFile = new File("pufferfish.yml");
-+		File configFile = pufferfishFile; // Purpur
++		File configFile = pufferfishFile != null ? pufferfishFile : new File("pufferfish.yml"); // Purpur
  		
  		if (configFile.exists()) {
  			try {
