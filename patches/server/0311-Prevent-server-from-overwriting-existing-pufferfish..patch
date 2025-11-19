@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NotAlexNoyle <alexnoyle@icloud.com>
+Date: Wed, 19 Nov 2025 12:35:55 -0500
+Subject: [PATCH] Prevent server from overwriting existing pufferfish.yml
+
+
+diff --git a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
+index b4e5fbace85c67e7bd347e6a90514bbc2c132d5e..99befcb612e48eddaebb4f0814f9f88bcbf9d761 100644
+--- a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
++++ b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
+@@ -52,7 +52,12 @@ public class PufferfishConfig {
+ 	
+ 	public static void load() throws IOException {
+ 		File configFile = pufferfishFile; // Purpur
+-		
++
++		boolean newlyCreated = false;
++		if (!configFile.exists()) {
++			newlyCreated = true;
++		}
++
+ 		if (configFile.exists()) {
+ 			try {
+ 				config.load(configFile);
+@@ -60,14 +65,14 @@ public class PufferfishConfig {
+ 				throw new IOException(e);
+ 			}
+ 		}
+-		
++
+ 		getString("info.version", "1.0");
+ 		setComment("info",
+ 				"Pufferfish Configuration",
+ 				"Check out Pufferfish Host for maximum performance server hosting: https://pufferfish.host",
+ 				"Join our Discord for support: https://discord.gg/reZw4vQV9H",
+ 				"Download new builds at https://ci.pufferfish.host/job/Pufferfish");
+-		
++
+ 		for (Method method : PufferfishConfig.class.getDeclaredMethods()) {
+ 			if (Modifier.isStatic(method.getModifiers()) && Modifier.isPrivate(method.getModifiers()) && method.getParameterCount() == 0 &&
+ 					method.getReturnType() == Void.TYPE && !method.getName().startsWith("lambda")) {
+@@ -79,19 +84,20 @@ public class PufferfishConfig {
+ 				}
+ 			}
+ 		}
+-		
++
+ 		updates++;
+-		
+-		config.save(configFile);
+-		
+-		// Attempt to detect vectorization
++
++		if (newlyCreated) {
++			config.save(configFile);
++		}
++
+ 		try {
+ 			SIMDDetection.isEnabled = SIMDDetection.canEnable(PufferfishLogger.LOGGER);
+ 			SIMDDetection.versionLimited = SIMDDetection.getJavaVersion() != 17 && SIMDDetection.getJavaVersion() != 18 && SIMDDetection.getJavaVersion() != 19;
+ 		} catch (NoClassDefFoundError | Exception ignored) {
+ 			ignored.printStackTrace();
+ 		}
+-		
++
+ 		if (SIMDDetection.isEnabled) {
+ 			PufferfishLogger.LOGGER.info("SIMD operations detected as functional. Will replace some operations with faster versions.");
+ 		} else if (SIMDDetection.versionLimited) {
