@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NotAlexNoyle <alexnoyle@icloud.com>
+Date: Wed, 19 Nov 2025 15:27:54 -0500
+Subject: [PATCH] Prevent chunks from unloading during villager curing
+
+
+diff --git a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
+index 0c6e8e05014125427513e96c32510125ec34ece9..b155966c48dcc9f60d9bd2e07130831d7261702e 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
++++ b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
+@@ -36,6 +36,7 @@ import net.minecraft.world.item.ItemStack;
+ import net.minecraft.world.item.Items;
+ import net.minecraft.world.item.enchantment.EnchantmentHelper;
+ import net.minecraft.world.item.trading.MerchantOffers;
++import net.minecraft.world.level.ChunkPos;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.ServerLevelAccessor;
+ import net.minecraft.world.level.block.BedBlock;
+@@ -71,6 +72,9 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+     private CompoundTag tradeOffers;
+     private int villagerXp;
+     private int lastTick = MinecraftServer.currentTick; // CraftBukkit - add field
++    @Nullable
++    private ChunkPos conversionForcedChunk;
++    private boolean hadNoAiBeforeConversion;
+ 
+     public ZombieVillager(EntityType<? extends ZombieVillager> type, Level world) {
+         super(type, world);
+@@ -210,6 +214,12 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+ 
+         super.tick();
+         this.lastTick = MinecraftServer.currentTick; // CraftBukkit
++
++        if (!this.level.isClientSide && !this.isConverting() && this.conversionForcedChunk != null && this.level instanceof ServerLevel serverLevel) {
++            serverLevel.setChunkForced(this.conversionForcedChunk.x, this.conversionForcedChunk.z, false);
++            this.conversionForcedChunk = null;
++            this.setNoAi(this.hadNoAiBeforeConversion);
++        }
+     }
+ 
+     @Override
+@@ -263,6 +273,16 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         this.removeEffect(MobEffects.WEAKNESS, org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
+         this.addEffect(new MobEffectInstance(MobEffects.DAMAGE_BOOST, delay, Math.min(this.level.getDifficulty().getId() - 1, 0)), org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
+         // CraftBukkit end
++        if (!this.level.isClientSide && uuid != null && this.level instanceof ServerLevel serverLevel) {
++            if (this.conversionForcedChunk != null) {
++                serverLevel.setChunkForced(this.conversionForcedChunk.x, this.conversionForcedChunk.z, false);
++            }
++            ChunkPos chunkPos = new ChunkPos(this.blockPosition());
++            serverLevel.setChunkForced(chunkPos.x, chunkPos.z, true);
++            this.conversionForcedChunk = chunkPos;
++            this.hadNoAiBeforeConversion = this.isNoAi();
++            this.setNoAi(true);
++        }
+         if (broadcastEntityEvent) this.level.broadcastEntityEvent(this, (byte) 16); // Paper - missing entity behaviour api - converting without entity event
+     }
+ 
+@@ -279,6 +299,10 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+     }
+ 
+     private void finishConversion(ServerLevel world) {
++        if (this.conversionForcedChunk != null) {
++            world.setChunkForced(this.conversionForcedChunk.x, this.conversionForcedChunk.z, false);
++            this.conversionForcedChunk = null;
++        }
+         // CraftBukkit start
+         Villager entityvillager = (Villager) this.convertTo(EntityType.VILLAGER, false, EntityTransformEvent.TransformReason.CURED, CreatureSpawnEvent.SpawnReason.CURED);
+         if (entityvillager == null) {
+@@ -320,6 +344,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         entityvillager.setVillagerXp(this.villagerXp);
+         entityvillager.finalizeSpawn(world, world.getCurrentDifficultyAt(entityvillager.blockPosition()), MobSpawnType.CONVERSION, (SpawnGroupData) null, (CompoundTag) null);
+         entityvillager.refreshBrain(world);
++        entityvillager.setNoAi(this.hadNoAiBeforeConversion);
+         if (this.conversionStarter != null) {
+             Player entityhuman = world.getGlobalPlayerByUUID(this.conversionStarter); // Paper - check all players
+ 
+@@ -432,3 +457,4 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         this.villagerXp = xp;
+     }
+ }
++
