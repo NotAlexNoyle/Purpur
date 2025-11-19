@@ -25,7 +25,7 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 
 - Prevent pufferfish.yml from being overwritten by the server.
 
-Soon:
+EXPERIMENTAL (may break things):
 
 - Keep chunks loaded while a villager is being cured.
 
@@ -121,45 +121,3 @@ will be placed under `Purpur-API/build/libs` and `Purpur-Server/build/libs`.
 
 To compile a server-ready purpurclip jar, run `./gradlew createReobfPaperclipJar`.
 To install the `purpur-api` and `purpur` dependencies to your local Maven repo, run `./gradlew publishToMavenLocal`. The compiled purpurclip jar will be in `build/libs/` not `Purpur-Server/build/libs`.
-
-Special Thanks To:
--------------
-
-<table>
-<tr>
-<td>
-
-### YourKit
-
-![YourKit-Logo](https://www.yourkit.com/images/yklogo.png)
-
-[YourKit](https://www.yourkit.com/), makers of the outstanding Java profiler,
-support open source projects of all kinds with their full-featured [Java](https://www.yourkit.com/java/profiler)
-and [.NET](https://www.yourkit.com/.net/profiler) application profilers. We thank them for allowing us to use their
-software so we can make Purpur the best it can be.
-
-</td>
-
-<td>
-
-### JetBrains
-
-[<img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png" alt="JetBrains Logo" height="75">](https://www.jetbrains.com)
-
-[JetBrains](https://www.jetbrains.com/), creators of the IntelliJ IDEA, supports Purpur with one of their [Open Source Licenses](https://www.jetbrains.com/opensource/). IntelliJ IDEA is the recommended IDE for working with Purpur, and most of the Purpur team uses it.
-
-</td>
-</tr>
-</table>
-
-### Our Contributors
-
-[![Contributors](https://purpurmc.org/svg?type=contributors&size=64&gap=4&cols=10)](https://github.com/PurpurMC/Purpur/graphs/contributors)
-
-### Our Sponsors
-
-[![GitHub Sponsors](https://purpurmc.org/svg?type=sponsors&size=64&gap=4&cols=10)](https://github.com/sponsors/PurpurMC)
-
-### Our Backers
-
-[![Sponsors](https://purpurmc.org/svg?type=opencollective&size=64&gap=4&cols=10)](https://opencollective.com/purpurmc)
