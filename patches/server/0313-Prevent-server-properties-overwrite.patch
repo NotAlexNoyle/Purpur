@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenAI <openai@example.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH] Prevent server.properties overwrite
+
+
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
+index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
+@@ -1,7 +1,8 @@
+ import com.mojang.logging.LogUtils;
++import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.util.function.UnaryOperator;
+ import org.slf4j.Logger;
+@@ -21,6 +22,10 @@ public class DedicatedServerSettings {
+     }
+ 
+     public void save() {
++        if (Files.exists(this.path)) {
++            return;
++        }
++
+         try {
+             this.properties.store(this.path);
+         } catch (Exception var2) {
