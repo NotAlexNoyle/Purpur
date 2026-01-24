@@ -28,6 +28,7 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 EXPERIMENTAL (may break things):
 
 - Keep chunks loaded while a villager is being cured.
+- Prevent server.properties from being overwritten by the server.
 
 ## Downloads
 Downloads can be obtained from the [downloads page](https://purpurmc.org/downloads/) or the [downloads API](https://api.purpurmc.org).

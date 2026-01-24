@@ -25,24 +25,3 @@ index 1111111111111111111111111111111111111111..22222222222222222222222222222222
          try {
              this.properties.store(this.path);
          } catch (Exception var2) {
-diff --git a/src/main/java/net/minecraft/server/dedicated/Settings.java b/src/main/java/net/minecraft/server/dedicated/Settings.java
-index 3333333333333333333333333333333333333333..4444444444444444444444444444444444444444 100644
---- a/src/main/java/net/minecraft/server/dedicated/Settings.java
-+++ b/src/main/java/net/minecraft/server/dedicated/Settings.java
-@@ -1,6 +1,7 @@
- import com.mojang.logging.LogUtils;
-+import java.nio.file.Files;
- import java.nio.file.Path;
- import java.util.Properties;
- import org.slf4j.Logger;
-@@ -40,6 +41,10 @@ public abstract class Settings<T extends Settings<T>> {
-     }
- 
-     public void store(Path path) {
-+        if (Files.exists(path)) {
-+            return;
-+        }
-+
-         try {
-             this.properties.store(path);
-         } catch (Exception var3) {
