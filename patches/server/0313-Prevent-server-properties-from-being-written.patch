@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 16 Mar 2026 00:00:00 +0000
+Subject: [PATCH] Prevent server.properties from being written
+
+
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
+index b8d93bcf6b6f698275e2292f4f573b4c1f4cdaf0..f2e190472235f03ec4d656845c44e33fa78fd0aa 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
+@@ -17,11 +17,16 @@ public class DedicatedServerSettings {
+         return this.properties;
+     }
+
+-    public void forceSave() {
+-        this.properties.store(this.source);
++    // Purpur start - never write server.properties
++    public void forceSave() {
++        // Intentionally no-op.
++        // The existing server.properties file should only be read, never rewritten.
+     }
+
+     public DedicatedServerSettings update(UnaryOperator<DedicatedServerProperties> modifier) {
+-        (this.properties = modifier.apply(this.properties)).store(this.source);
++        // Apply runtime property changes in-memory only.
++        // This prevents any path (Bukkit/Spigot/Paper/Purpur) from persisting to server.properties.
++        this.properties = modifier.apply(this.properties);
+         return this;
+     }
++    // Purpur end
+ }
