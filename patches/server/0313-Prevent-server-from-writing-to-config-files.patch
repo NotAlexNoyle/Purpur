@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NotAlexNoyle <alexnoyle@icloud.com>
+Date: Wed, 25 Mar 2026 03:54:25 -0400
+Subject: [PATCH] Prevent server from writing to config files
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/Configurations.java b/src/main/java/io/papermc/paper/configuration/Configurations.java
+index 9ef6712c70fcd8912a79f3f61e351aac09572cf3..a4b27057324511683a31af7b60a5f8a3e55895b6 100644
+--- a/src/main/java/io/papermc/paper/configuration/Configurations.java
++++ b/src/main/java/io/papermc/paper/configuration/Configurations.java
+@@ -102,6 +102,18 @@ public abstract class Configurations<G, W> {
+     }
+ 
+     private void trySaveFileNode(YamlConfigurationLoader loader, ConfigurationNode node, String filename) throws ConfigurateException {
++        LOGGER.info("Skipping write to immutable Paper configuration file '{}'", filename);
++    }
++
++    protected boolean shouldWriteConfigFiles() {
++        return false;
++    }
++
++    private void trySaveFileNodeIfWritable(YamlConfigurationLoader loader, ConfigurationNode node, String filename) throws ConfigurateException {
++        if (!this.shouldWriteConfigFiles()) {
++            this.trySaveFileNode(loader, node, filename);
++            return;
++        }
+         try {
+             loader.save(node);
+         } catch (ConfigurateException ex) {
+@@ -125,7 +137,7 @@ public abstract class Configurations<G, W> {
+         }
+         this.applyGlobalConfigTransformations(node);
+         final G instance = creator.apply(node);
+-        trySaveFileNode(loader, node, configFile.toString());
++        trySaveFileNodeIfWritable(loader, node, configFile.toString());
+         return instance;
+     }
+ 
+@@ -153,7 +165,7 @@ public abstract class Configurations<G, W> {
+         this.applyWorldConfigTransformations(contextMap, node);
+         final W instance = node.require(this.worldConfigClass);
+         node.set(this.worldConfigClass, instance);
+-        trySaveFileNode(loader, node, configFile.toString());
++        trySaveFileNodeIfWritable(loader, node, configFile.toString());
+     }
+ 
+     private DefaultWorldLoader createDefaultWorldLoader(final boolean requireFile, final ContextMap contextMap, final Path configFile) {
+@@ -196,8 +208,6 @@ public abstract class Configurations<G, W> {
+         final Path dir = contextMap.require(WORLD_DIRECTORY);
+         final Path worldConfigFile = dir.resolve(this.worldConfigFileName);
+         if (Files.notExists(worldConfigFile)) {
+-            PaperConfigurations.createDirectoriesSymlinkAware(dir);
+-            Files.createFile(worldConfigFile); // create empty file as template
+             newFile = true;
+         }
+ 
+@@ -211,7 +221,7 @@ public abstract class Configurations<G, W> {
+         }
+         this.applyWorldConfigTransformations(contextMap, worldNode);
+         this.applyDefaultsAwareWorldConfigTransformations(contextMap, worldNode, defaultsNode);
+-        trySaveFileNode(worldLoader, worldNode, worldConfigFile.toString()); // save before loading node NOTE: don't save the backing node after loading it, or you'll fill up the world-specific config
++        trySaveFileNodeIfWritable(worldLoader, worldNode, worldConfigFile.toString()); // save before loading node NOTE: don't save the backing node after loading it, or you'll fill up the world-specific config
+         worldNode.mergeFrom(defaultsNode);
+         return creator.apply(worldNode);
+     }
+diff --git a/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java b/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java
+index f6b9d216c24d8858802f85209fe1a869e5a9be31..3ed6c4e32c93bfd33f28f10678a7c04f4ffe9525 100644
+--- a/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java
++++ b/src/main/java/io/papermc/paper/configuration/PaperConfigurations.java
+@@ -354,9 +354,6 @@ public class PaperConfigurations extends Configurations<GlobalConfiguration, Wor
+         createDirectoriesSymlinkAware(configDir);
+ 
+         final YamlConfigurationLoader legacyLoader = ConfigurationLoaders.naturallySortedWithoutHeader(legacyConfig);
+-        final YamlConfigurationLoader globalLoader = ConfigurationLoaders.naturallySortedWithoutHeader(configDir.resolve(GLOBAL_CONFIG_FILE_NAME));
+-        final YamlConfigurationLoader worldDefaultsLoader = ConfigurationLoaders.naturallySortedWithoutHeader(configDir.resolve(WORLD_DEFAULTS_CONFIG_FILE_NAME));
+-
+         final ConfigurationNode legacy = legacyLoader.load();
+         checkState(!legacy.virtual(), "can't be virtual");
+         final int version = legacy.node(Configuration.LEGACY_CONFIG_VERSION_FIELD).getInt();
+@@ -368,11 +365,9 @@ public class PaperConfigurations extends Configurations<GlobalConfiguration, Wor
+         // Apply legacy transformations before settings flatten
+         final YamlConfiguration spigotConfiguration = loadLegacyConfigFile(spigotConfig); // needs to change spigot config values in this transformation
+         LegacyPaperConfig.transformation(spigotConfiguration).apply(legacy);
+-        spigotConfiguration.save(spigotConfig);
+         legacy.mergeFrom(legacy.node("settings")); // flatten "settings" to root
+         legacy.removeChild("settings");
+         LegacyPaperConfig.toNewFormat().apply(legacy);
+-        globalLoader.save(legacy); // save converted node to new global location
+ 
+         final ConfigurationNode worldDefaults = legacyWorldSettings.node("default").copy();
+         checkState(!worldDefaults.virtual());
+@@ -380,18 +375,18 @@ public class PaperConfigurations extends Configurations<GlobalConfiguration, Wor
+         legacyWorldSettings.removeChild("default");
+         LegacyPaperWorldConfig.transformation().apply(worldDefaults);
+         LegacyPaperWorldConfig.toNewFormat().apply(worldDefaults);
+-        worldDefaultsLoader.save(worldDefaults);
+ 
+         legacyWorldSettings.childrenMap().forEach((world, legacyWorldNode) -> {
+             try {
+                 legacyWorldNode.node(Configuration.LEGACY_CONFIG_VERSION_FIELD).raw(version);
+                 LegacyPaperWorldConfig.transformation().apply(legacyWorldNode);
+                 LegacyPaperWorldConfig.toNewFormat().apply(legacyWorldNode);
+-                ConfigurationLoaders.naturallySortedWithoutHeader(worldFolder.resolve(world.toString()).resolve(WORLD_CONFIG_FILE_NAME)).save(legacyWorldNode); // save converted node to new location
+             } catch (final ConfigurateException ex) {
+                 ex.printStackTrace();
+             }
+         });
++
++        LOGGER.warn("Detected legacy Paper configuration at '{}', but skipped writing converted files because Paper configuration files are immutable in this build. Migrate the settings manually into '{}', '{}', and each world's '{}' if you still need them.", legacyConfig, GLOBAL_CONFIG_FILE_NAME, WORLD_DEFAULTS_CONFIG_FILE_NAME, WORLD_CONFIG_FILE_NAME);
+     }
+ 
+     private static boolean needsConverting(final Path legacyConfig) {
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
+index 8d029ff40a35004ba6a9c5f5879444f46b2b60ac..d6f9f214add0d2fa07a078f0353826b982d5970f 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
+@@ -1,7 +1,9 @@
+ package net.minecraft.server.dedicated;
+ 
++import com.mojang.logging.LogUtils;
+ import java.nio.file.Path;
+ import java.util.function.UnaryOperator;
++import org.slf4j.Logger;
+ 
+ // CraftBukkit start
+ import java.io.File;
+@@ -9,6 +11,7 @@ import joptsimple.OptionSet;
+ // CraftBukkit end
+ 
+ public class DedicatedServerSettings {
++    private static final Logger LOGGER = LogUtils.getClassLogger();
+ 
+     private final Path source;
+     private DedicatedServerProperties properties;
+@@ -25,11 +28,12 @@ public class DedicatedServerSettings {
+     }
+ 
+     public void forceSave() {
+-        this.properties.store(this.source);
++        LOGGER.info("Skipping write to immutable server properties file '{}'", this.source);
+     }
+ 
+     public DedicatedServerSettings update(UnaryOperator<DedicatedServerProperties> applier) {
+-        (this.properties = (DedicatedServerProperties) applier.apply(this.properties)).store(this.source);
++        this.properties = (DedicatedServerProperties) applier.apply(this.properties);
++        LOGGER.info("Skipping write to immutable server properties file '{}'", this.source);
+         return this;
+     }
+ }
+diff --git a/src/main/java/org/purpurmc/purpur/PurpurConfig.java b/src/main/java/org/purpurmc/purpur/PurpurConfig.java
+index be8b44daa0141151c973917a774aa07721647ed1..e05ea5532df5555ae8a4afa1044e458a2486e030 100644
+--- a/src/main/java/org/purpurmc/purpur/PurpurConfig.java
++++ b/src/main/java/org/purpurmc/purpur/PurpurConfig.java
+@@ -115,11 +115,7 @@ public class PurpurConfig {
+             }
+         }
+ 
+-        try {
+-            config.save(CONFIG_FILE);
+-        } catch (IOException ex) {
+-            Bukkit.getLogger().log(Level.SEVERE, "Could not save " + CONFIG_FILE, ex);
+-        }
++        Bukkit.getLogger().info("Skipping write to immutable Purpur configuration file '" + CONFIG_FILE + "'");
+     }
+ 
+     private static void set(String path, Object val) {
