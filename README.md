@@ -23,7 +23,7 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 
 ## Changes over mainline Purpur
 
-- Prevent pufferfish.yml from being overwritten by the server.
+- Prevents pufferfish.yml, server.properties, config/paper-world.yml, config/paper-world-defaults.yml, and config/paper-global.yml from being written to by the server.
 
 EXPERIMENTAL (may break things):
 
