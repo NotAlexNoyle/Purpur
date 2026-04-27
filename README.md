@@ -24,6 +24,7 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 ## Changes over mainline Purpur
 
 - Prevents pufferfish.yml, server.properties, config/paper-world.yml, config/paper-world-defaults.yml, and config/paper-global.yml from being written to by the server.
+- Suppresses "lost connection" messages from the console.
 
 EXPERIMENTAL (may break things):
 
