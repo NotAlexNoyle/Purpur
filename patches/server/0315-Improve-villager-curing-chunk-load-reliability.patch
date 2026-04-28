@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NotAlexNoyle <alexnoyle@icloud.com>
+Date: Tue, 28 Apr 2026 09:23:49 -0400
+Subject: [PATCH] Improve villager curing chunk-load reliability
+
+
+diff --git a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
+index b155966c48dcc9f60d9bd2e07130831d7261702e..85748a29fea5d2f806873caa2d343b8f8e5dfacf 100644
+--- a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
++++ b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
+@@ -3,6 +3,7 @@ package net.minecraft.world.entity.monster;
+ import com.mojang.logging.LogUtils;
+ import com.mojang.serialization.DataResult;
+ import com.mojang.serialization.Dynamic;
++import java.util.Comparator;
+ import java.util.Objects;
+ import java.util.UUID;
+ import javax.annotation.Nullable;
+@@ -21,6 +22,7 @@ import net.minecraft.world.InteractionResult;
+ import net.minecraft.world.damagesource.DamageSource;
+ import net.minecraft.world.effect.MobEffectInstance;
+ import net.minecraft.world.effect.MobEffects;
++import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.EquipmentSlot;
+ import net.minecraft.world.entity.MobSpawnType;
+@@ -48,6 +50,7 @@ import org.slf4j.Logger;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.server.level.TicketType;
+ import net.minecraft.sounds.SoundEvent;
+ import net.minecraft.sounds.SoundEvents;
+ import org.bukkit.event.entity.CreatureSpawnEvent;
+@@ -63,6 +66,8 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+     private static final int VILLAGER_CONVERSION_WAIT_MAX = 6000;
+     private static final int MAX_SPECIAL_BLOCKS_COUNT = 14;
+     private static final int SPECIAL_BLOCK_RADIUS = 4;
++    private static final int CONVERSION_TICKET_RADIUS = 2; // TrueOG - radius 2 = ENTITY_TICKING level for center chunk
++    private static final TicketType<UUID> CONVERSION_TICKET = TicketType.create("zombie_villager_conversion", Comparator.comparing(UUID::toString)); // TrueOG - per-entity chunk ticket; doesn't conflict with /forceload, doesn't persist to disk
+     public int villagerConversionTime;
+     @Nullable
+     public UUID conversionStarter;
+@@ -75,6 +80,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+     @Nullable
+     private ChunkPos conversionForcedChunk;
+     private boolean hadNoAiBeforeConversion;
++    private boolean noAiOverridden; // TrueOG - separate flag so NoAi cleanup is independent of chunk ticket cleanup
+ 
+     public ZombieVillager(EntityType<? extends ZombieVillager> type, Level world) {
+         super(type, world);
+@@ -165,6 +171,13 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+             nbt.putUUID("ConversionPlayer", this.conversionStarter);
+         }
+ 
++        // TrueOG start - persist NoAi capture so cure-after-restart restores correct state
++        if (this.noAiOverridden) {
++            nbt.putBoolean("PurpurNoAiOverridden", true);
++            nbt.putBoolean("PurpurPreCureNoAi", this.hadNoAiBeforeConversion);
++        }
++        // TrueOG end
++
+         nbt.putInt("Xp", this.villagerXp);
+     }
+ 
+@@ -187,6 +200,13 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+             this.gossips = nbt.getList("Gossips", 10);
+         }
+ 
++        // TrueOG start - restore NoAi capture before startConverting replay so it doesn't re-capture the in-progress (NoAi=true) state
++        if (nbt.getBoolean("PurpurNoAiOverridden")) {
++            this.noAiOverridden = true;
++            this.hadNoAiBeforeConversion = nbt.getBoolean("PurpurPreCureNoAi");
++        }
++        // TrueOG end
++
+         if (nbt.contains("ConversionTime", 99) && nbt.getInt("ConversionTime") > -1) {
+             this.startConverting(nbt.hasUUID("ConversionPlayer") ? nbt.getUUID("ConversionPlayer") : null, nbt.getInt("ConversionTime"));
+         }
+@@ -215,11 +235,12 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         super.tick();
+         this.lastTick = MinecraftServer.currentTick; // CraftBukkit
+ 
+-        if (!this.level.isClientSide && !this.isConverting() && this.conversionForcedChunk != null && this.level instanceof ServerLevel serverLevel) {
+-            serverLevel.setChunkForced(this.conversionForcedChunk.x, this.conversionForcedChunk.z, false);
+-            this.conversionForcedChunk = null;
+-            this.setNoAi(this.hadNoAiBeforeConversion);
++        // TrueOG start - independent cleanup: handle failed/cancelled conversion (e.g. EntityTransformEvent cancelled)
++        if (!this.level.isClientSide && !this.isConverting()) {
++            this.releaseConversionTicket();
++            this.restoreNoAiState();
+         }
++        // TrueOG end
+     }
+ 
+     @Override
+@@ -255,6 +276,28 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         return !this.isConverting() && this.villagerXp == 0;
+     }
+ 
++    // TrueOG start - guarantee chunk ticket release on any removal path (death, despawn, /kill, dimension change, etc.)
++    @Override
++    public void remove(Entity.RemovalReason reason) {
++        this.releaseConversionTicket();
++        super.remove(reason);
++    }
++
++    private void releaseConversionTicket() {
++        if (this.conversionForcedChunk != null && this.level instanceof ServerLevel serverLevel) {
++            serverLevel.getChunkSource().removeRegionTicket(CONVERSION_TICKET, this.conversionForcedChunk, CONVERSION_TICKET_RADIUS, this.getUUID());
++        }
++        this.conversionForcedChunk = null;
++    }
++
++    private void restoreNoAiState() {
++        if (this.noAiOverridden) {
++            this.setNoAi(this.hadNoAiBeforeConversion);
++            this.noAiOverridden = false;
++        }
++    }
++    // TrueOG end
++
+     public boolean isConverting() {
+         return (Boolean) this.getEntityData().get(ZombieVillager.DATA_CONVERTING_ID);
+     }
+@@ -274,13 +317,18 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         this.addEffect(new MobEffectInstance(MobEffects.DAMAGE_BOOST, delay, Math.min(this.level.getDifficulty().getId() - 1, 0)), org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
+         // CraftBukkit end
+         if (!this.level.isClientSide && uuid != null && this.level instanceof ServerLevel serverLevel) {
++            // TrueOG - use custom ticket: avoids /forceload conflict and avoids persisting to forced_chunks.dat (no leak across restart)
+             if (this.conversionForcedChunk != null) {
+-                serverLevel.setChunkForced(this.conversionForcedChunk.x, this.conversionForcedChunk.z, false);
++                serverLevel.getChunkSource().removeRegionTicket(CONVERSION_TICKET, this.conversionForcedChunk, CONVERSION_TICKET_RADIUS, this.getUUID());
+             }
+             ChunkPos chunkPos = new ChunkPos(this.blockPosition());
+-            serverLevel.setChunkForced(chunkPos.x, chunkPos.z, true);
++            serverLevel.getChunkSource().addRegionTicket(CONVERSION_TICKET, chunkPos, CONVERSION_TICKET_RADIUS, this.getUUID());
+             this.conversionForcedChunk = chunkPos;
+-            this.hadNoAiBeforeConversion = this.isNoAi();
++            // TrueOG - capture original NoAi only on first start; reload-replay path already has hadNoAiBeforeConversion restored from NBT
++            if (!this.noAiOverridden) {
++                this.hadNoAiBeforeConversion = this.isNoAi();
++                this.noAiOverridden = true;
++            }
+             this.setNoAi(true);
+         }
+         if (broadcastEntityEvent) this.level.broadcastEntityEvent(this, (byte) 16); // Paper - missing entity behaviour api - converting without entity event
+@@ -299,14 +347,12 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+     }
+ 
+     private void finishConversion(ServerLevel world) {
+-        if (this.conversionForcedChunk != null) {
+-            world.setChunkForced(this.conversionForcedChunk.x, this.conversionForcedChunk.z, false);
+-            this.conversionForcedChunk = null;
+-        }
++        this.releaseConversionTicket(); // TrueOG - release before convertTo so the new villager isn't holding an obsolete ticket
+         // CraftBukkit start
+         Villager entityvillager = (Villager) this.convertTo(EntityType.VILLAGER, false, EntityTransformEvent.TransformReason.CURED, CreatureSpawnEvent.SpawnReason.CURED);
+         if (entityvillager == null) {
+             ((org.bukkit.entity.ZombieVillager) getBukkitEntity()).setConversionTime(-1); // SPIGOT-5208: End conversion to stop event spam
++            // TrueOG - tick() cleanup will run restoreNoAiState() on the next tick now that isConverting() is false
+             return;
+         }
+         // CraftBukkit end
+@@ -345,6 +391,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+         entityvillager.finalizeSpawn(world, world.getCurrentDifficultyAt(entityvillager.blockPosition()), MobSpawnType.CONVERSION, (SpawnGroupData) null, (CompoundTag) null);
+         entityvillager.refreshBrain(world);
+         entityvillager.setNoAi(this.hadNoAiBeforeConversion);
++        this.noAiOverridden = false; // TrueOG - state handed off to new villager; original is being discarded by convertTo
+         if (this.conversionStarter != null) {
+             Player entityhuman = world.getGlobalPlayerByUUID(this.conversionStarter); // Paper - check all players
+ 
