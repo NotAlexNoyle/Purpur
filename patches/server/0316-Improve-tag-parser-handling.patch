@@ -1,0 +1,1026 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Purpur <noreply@purpurmc.org>
+Date: Tue, 12 May 2026 14:44:42 -0400
+Subject: [PATCH] Improve tag parser handling
+
+
+diff --git a/src/main/java/com/mojang/brigadier/CommandDispatcher.java b/src/main/java/com/mojang/brigadier/CommandDispatcher.java
+index b64c98c173e25055f4ff9d7124d0a3cb7ff6ab1d..4d9c7be329bdf58bdda9c0b34c309bebcd300de6 100644
+--- a/src/main/java/com/mojang/brigadier/CommandDispatcher.java
++++ b/src/main/java/com/mojang/brigadier/CommandDispatcher.java
+@@ -361,9 +361,15 @@ public class CommandDispatcher<S> {
+             }
+             final CommandContextBuilder<S> context = contextSoFar.copy();
+             final StringReader reader = new StringReader(originalReader);
++            boolean stop = false; // Paper - Handle non-recoverable exceptions
+             try {
+                 try {
+                     child.parse(reader, context);
++                    // Paper start - Handle non-recoverable exceptions
++                } catch (final io.papermc.paper.brigadier.TagParseCommandSyntaxException e) {
++                    stop = true;
++                    throw e;
++                    // Paper end - Handle non-recoverable exceptions
+                 } catch (final RuntimeException ex) {
+                     throw CommandSyntaxException.BUILT_IN_EXCEPTIONS.dispatcherParseException().createWithContext(reader, ex.getMessage());
+                 }
+@@ -378,6 +384,7 @@ public class CommandDispatcher<S> {
+                 }
+                 errors.put(child, ex);
+                 reader.setCursor(cursor);
++                if (stop) return new ParseResults<>(contextSoFar, originalReader, errors); // Paper - Handle non-recoverable exceptions
+                 continue;
+             }
+ 
+diff --git a/src/main/java/io/papermc/paper/brigadier/TagParseCommandSyntaxException.java b/src/main/java/io/papermc/paper/brigadier/TagParseCommandSyntaxException.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a375ad4ba9db990b24a2b9ff366fcba66b753815
+--- /dev/null
++++ b/src/main/java/io/papermc/paper/brigadier/TagParseCommandSyntaxException.java
+@@ -0,0 +1,15 @@
++package io.papermc.paper.brigadier;
++
++import com.mojang.brigadier.LiteralMessage;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
++import net.minecraft.network.chat.Component;
++
++public final class TagParseCommandSyntaxException extends CommandSyntaxException {
++
++    private static final SimpleCommandExceptionType EXCEPTION_TYPE = new SimpleCommandExceptionType(new LiteralMessage("Error parsing NBT"));
++
++    public TagParseCommandSyntaxException(final String message) {
++        super(EXCEPTION_TYPE, Component.literal(message));
++    }
++}
+diff --git a/src/main/java/net/minecraft/nbt/TagParser.java b/src/main/java/net/minecraft/nbt/TagParser.java
+index fbfe810e8be6cb159742f7fd85e7491b9cefa4dc..38209e94903df21b2e272d31b65c720bd20fed9b 100644
+--- a/src/main/java/net/minecraft/nbt/TagParser.java
++++ b/src/main/java/net/minecraft/nbt/TagParser.java
+@@ -38,6 +38,7 @@ public class TagParser {
+     private static final Pattern SHORT_PATTERN = Pattern.compile("[-+]?(?:0|[1-9][0-9]*)s", 2);
+     private static final Pattern INT_PATTERN = Pattern.compile("[-+]?(?:0|[1-9][0-9]*)");
+     private final StringReader reader;
++    private int depth; // Paper
+ 
+     public static CompoundTag parseTag(String string) throws CommandSyntaxException {
+         return (new TagParser(new StringReader(string))).readSingleStruct();
+@@ -146,30 +147,35 @@ public class TagParser {
+ 
+     public CompoundTag readStruct() throws CommandSyntaxException {
+         this.expect('{');
+-        CompoundTag compoundTag = new CompoundTag();
+-        this.reader.skipWhitespace();
++        this.increaseDepth(); // Paper
++        try { // Paper - restore depth on any exit so reused parsers don't accumulate stale depth
++            CompoundTag compoundTag = new CompoundTag();
++            this.reader.skipWhitespace();
+ 
+-        while(this.reader.canRead() && this.reader.peek() != '}') {
+-            int i = this.reader.getCursor();
+-            String string = this.readKey();
+-            if (string.isEmpty()) {
+-                this.reader.setCursor(i);
+-                throw ERROR_EXPECTED_KEY.createWithContext(this.reader);
+-            }
++            while(this.reader.canRead() && this.reader.peek() != '}') {
++                int i = this.reader.getCursor();
++                String string = this.readKey();
++                if (string.isEmpty()) {
++                    this.reader.setCursor(i);
++                    throw ERROR_EXPECTED_KEY.createWithContext(this.reader);
++                }
+ 
+-            this.expect(':');
+-            compoundTag.put(string, this.readValue());
+-            if (!this.hasElementSeparator()) {
+-                break;
+-            }
++                this.expect(':');
++                compoundTag.put(string, this.readValue());
++                if (!this.hasElementSeparator()) {
++                    break;
++                }
+ 
+-            if (!this.reader.canRead()) {
+-                throw ERROR_EXPECTED_KEY.createWithContext(this.reader);
++                if (!this.reader.canRead()) {
++                    throw ERROR_EXPECTED_KEY.createWithContext(this.reader);
++                }
+             }
+-        }
+ 
+-        this.expect('}');
+-        return compoundTag;
++            this.expect('}');
++            return compoundTag;
++        } finally { // Paper
++            this.depth--; // Paper
++        } // Paper
+     }
+ 
+     private Tag readListTag() throws CommandSyntaxException {
+@@ -178,32 +184,37 @@ public class TagParser {
+         if (!this.reader.canRead()) {
+             throw ERROR_EXPECTED_VALUE.createWithContext(this.reader);
+         } else {
+-            ListTag listTag = new ListTag();
+-            TagType<?> tagType = null;
+-
+-            while(this.reader.peek() != ']') {
+-                int i = this.reader.getCursor();
+-                Tag tag = this.readValue();
+-                TagType<?> tagType2 = tag.getType();
+-                if (tagType == null) {
+-                    tagType = tagType2;
+-                } else if (tagType2 != tagType) {
+-                    this.reader.setCursor(i);
+-                    throw ERROR_INSERT_MIXED_LIST.createWithContext(this.reader, tagType2.getPrettyName(), tagType.getPrettyName());
+-                }
++            this.increaseDepth(); // Paper
++            try { // Paper - restore depth on any exit
++                ListTag listTag = new ListTag();
++                TagType<?> tagType = null;
++
++                while(this.reader.peek() != ']') {
++                    int i = this.reader.getCursor();
++                    Tag tag = this.readValue();
++                    TagType<?> tagType2 = tag.getType();
++                    if (tagType == null) {
++                        tagType = tagType2;
++                    } else if (tagType2 != tagType) {
++                        this.reader.setCursor(i);
++                        throw ERROR_INSERT_MIXED_LIST.createWithContext(this.reader, tagType2.getPrettyName(), tagType.getPrettyName());
++                    }
+ 
+-                listTag.add(tag);
+-                if (!this.hasElementSeparator()) {
+-                    break;
+-                }
++                    listTag.add(tag);
++                    if (!this.hasElementSeparator()) {
++                        break;
++                    }
+ 
+-                if (!this.reader.canRead()) {
+-                    throw ERROR_EXPECTED_VALUE.createWithContext(this.reader);
++                    if (!this.reader.canRead()) {
++                        throw ERROR_EXPECTED_VALUE.createWithContext(this.reader);
++                    }
+                 }
+-            }
+ 
+-            this.expect(']');
+-            return listTag;
++                this.expect(']');
++                return listTag;
++            } finally { // Paper
++                this.depth--; // Paper
++            } // Paper
+         }
+     }
+ 
+@@ -241,11 +252,11 @@ public class TagParser {
+                 }
+ 
+                 if (typeReader == ByteTag.TYPE) {
+-                    list.add((T)((NumericTag)tag).getAsByte());
++                    list.add((T) (Number) ((NumericTag) tag).getAsByte());
+                 } else if (typeReader == LongTag.TYPE) {
+-                    list.add((T)((NumericTag)tag).getAsLong());
++                    list.add((T) (Number) ((NumericTag) tag).getAsLong());
+                 } else {
+-                    list.add((T)((NumericTag)tag).getAsInt());
++                    list.add((T) (Number) ((NumericTag) tag).getAsInt());
+                 }
+ 
+                 if (this.hasElementSeparator()) {
+@@ -276,4 +287,14 @@ public class TagParser {
+         this.reader.skipWhitespace();
+         this.reader.expect(c);
+     }
++
++    // Paper start
++    private void increaseDepth() throws CommandSyntaxException {
++        this.depth++;
++        if (this.depth > 512) {
++            this.depth--; // restore so the field stays consistent for any reuse
++            throw new io.papermc.paper.brigadier.TagParseCommandSyntaxException("NBT tag is too complex, depth > 512");
++        }
++    }
++    // Paper end
+ }
+diff --git a/src/main/java/net/minecraft/network/chat/ComponentUtils.java b/src/main/java/net/minecraft/network/chat/ComponentUtils.java
+index 584a58659fae6ba3d8b53858890bc6ec509ffb0e..a77a4a38b717d4616f919650d710660a518894f3 100644
+--- a/src/main/java/net/minecraft/network/chat/ComponentUtils.java
++++ b/src/main/java/net/minecraft/network/chat/ComponentUtils.java
+@@ -34,10 +34,49 @@ public class ComponentUtils {
+         }
+     }
+ 
++    @io.papermc.paper.annotation.DoNotUse // Paper - validate separators - right now this method is only used for separator evaluation. Error on build if this changes to re-evaluate.
+     public static Optional<MutableComponent> updateForEntity(@Nullable CommandSourceStack source, Optional<Component> text, @Nullable Entity sender, int depth) throws CommandSyntaxException {
+         return text.isPresent() ? Optional.of(updateForEntity(source, text.get(), sender, depth)) : Optional.empty();
+     }
+ 
++    // Paper start - validate separator
++    public static Optional<MutableComponent> updateSeparatorForEntity(@Nullable CommandSourceStack source, Optional<Component> text, @Nullable Entity sender, int depth) throws CommandSyntaxException {
++        if (text.isEmpty() || !isValidSelector(text.get())) return Optional.empty();
++        return Optional.of(updateForEntity(source, text.get(), sender, depth));
++    }
++    public static boolean isValidSelector(final Component component) {
++        return isValidSelector(component, 0);
++    }
++    private static boolean isValidSelector(final Component component, final int depth) {
++        // Diverges from upstream Paper: traverses siblings and hover SHOW_TEXT in addition to root contents
++        // and translatable args. updateForEntity itself recurses through siblings and hover text, so any
++        // separator that LOOKS valid at the root but carries an NBT/Selector sibling or hover Component
++        // would still trigger amplification when resolved. Bound recursion at 100 to mirror updateForEntity's
++        // own depth guard; fail-closed on overflow so a pathological tree degrades to an empty separator.
++        if (depth > 100) return false;
++
++        final ComponentContents contents = component.getContents();
++        if (contents instanceof net.minecraft.network.chat.contents.NbtContents || contents instanceof net.minecraft.network.chat.contents.SelectorContents) return false;
++        if (contents instanceof final net.minecraft.network.chat.contents.TranslatableContents translatableContents) {
++            for (final Object arg : translatableContents.getArgs()) {
++                if (arg instanceof final Component argumentAsComponent && !isValidSelector(argumentAsComponent, depth + 1)) return false;
++            }
++        }
++
++        for (final Component sibling : component.getSiblings()) {
++            if (!isValidSelector(sibling, depth + 1)) return false;
++        }
++
++        final HoverEvent hoverEvent = component.getStyle().getHoverEvent();
++        if (hoverEvent != null) {
++            final Component hoverComponent = hoverEvent.getValue(HoverEvent.Action.SHOW_TEXT);
++            if (hoverComponent != null && !isValidSelector(hoverComponent, depth + 1)) return false;
++        }
++
++        return true;
++    }
++    // Paper end - validate separator
++
+     public static MutableComponent updateForEntity(@Nullable CommandSourceStack source, Component text, @Nullable Entity sender, int depth) throws CommandSyntaxException {
+         if (depth > 100) {
+             return text.copy();
+diff --git a/src/main/java/net/minecraft/network/chat/contents/NbtContents.java b/src/main/java/net/minecraft/network/chat/contents/NbtContents.java
+index 97a2657bc98d41c3c1e376b266d2c85f685acc88..622f48a9c70abc32a859af8a78d639d3146ad3a8 100644
+--- a/src/main/java/net/minecraft/network/chat/contents/NbtContents.java
++++ b/src/main/java/net/minecraft/network/chat/contents/NbtContents.java
+@@ -104,7 +104,7 @@ public class NbtContents implements ComponentContents {
+                 }
+             }).map(Tag::getAsString);
+             if (this.interpreting) {
+-                Component component = DataFixUtils.orElse(ComponentUtils.updateForEntity(source, this.separator, sender, depth), ComponentUtils.DEFAULT_NO_STYLE_SEPARATOR);
++                Component component = DataFixUtils.orElse(ComponentUtils.updateSeparatorForEntity(source, this.separator, sender, depth), ComponentUtils.DEFAULT_NO_STYLE_SEPARATOR); // Paper - validate separator
+                 return stream.flatMap((text) -> {
+                     try {
+                         MutableComponent mutableComponent = Component.Serializer.fromJson(text);
+@@ -117,7 +117,7 @@ public class NbtContents implements ComponentContents {
+                     return accumulator.append(component).append(current);
+                 }).orElseGet(Component::empty);
+             } else {
+-                return ComponentUtils.updateForEntity(source, this.separator, sender, depth).map((text) -> {
++                return ComponentUtils.updateSeparatorForEntity(source, this.separator, sender, depth).map((text) -> { // Paper - validate separator
+                     return stream.map(Component::literal).reduce((accumulator, current) -> {
+                         return accumulator.append(text).append(current);
+                     }).orElseGet(Component::empty);
+diff --git a/src/main/java/net/minecraft/network/chat/contents/SelectorContents.java b/src/main/java/net/minecraft/network/chat/contents/SelectorContents.java
+index 9e6864059e54d3f9596cbad1345657dc085ca6ae..9f046cd7157c4539e7081f821800c8aa20dfee35 100644
+--- a/src/main/java/net/minecraft/network/chat/contents/SelectorContents.java
++++ b/src/main/java/net/minecraft/network/chat/contents/SelectorContents.java
+@@ -60,7 +60,7 @@ public class SelectorContents implements ComponentContents {
+     @Override
+     public MutableComponent resolve(@Nullable CommandSourceStack source, @Nullable Entity sender, int depth) throws CommandSyntaxException {
+         if (source != null && this.selector != null) {
+-            Optional<? extends Component> optional = ComponentUtils.updateForEntity(source, this.separator, sender, depth);
++            Optional<? extends Component> optional = ComponentUtils.updateSeparatorForEntity(source, this.separator, sender, depth); // Paper - validate separator
+             return ComponentUtils.formatList(this.selector.findEntities(source), optional, Entity::getDisplayName);
+         } else {
+             return Component.empty();
+diff --git a/src/main/java/net/minecraft/network/chat/contents/TranslatableContents.java b/src/main/java/net/minecraft/network/chat/contents/TranslatableContents.java
+index 8a68baf6bd46b59cf57c94ffe5651d47a7cae99c..ce2603251b9b69acd804808e9164921e1fbc0b65 100644
+--- a/src/main/java/net/minecraft/network/chat/contents/TranslatableContents.java
++++ b/src/main/java/net/minecraft/network/chat/contents/TranslatableContents.java
+@@ -134,6 +134,15 @@ public class TranslatableContents implements ComponentContents {
+ 
+     @Override
+     public <T> Optional<T> visit(FormattedText.ContentConsumer<T> visitor) {
++        // Paper start - Count visited parts
++        try {
++            return this.visit(new TranslatableContentConsumer<>(visitor));
++        } catch (IllegalArgumentException ignored) {
++            return visitor.accept("...");
++        }
++    }
++    private <T> Optional<T> visit(TranslatableContentConsumer<T> visitor) {
++        // Paper end - Count visited parts
+         this.decompose();
+ 
+         for(FormattedText formattedText : this.decomposedParts) {
+@@ -145,6 +154,25 @@ public class TranslatableContents implements ComponentContents {
+ 
+         return Optional.empty();
+     }
++    // Paper start - Count visited parts
++    private static final class TranslatableContentConsumer<T> implements FormattedText.ContentConsumer<T> {
++        private static final IllegalArgumentException EX = new IllegalArgumentException("Too long");
++        private final FormattedText.ContentConsumer<T> visitor;
++        private int visited;
++
++        private TranslatableContentConsumer(FormattedText.ContentConsumer<T> visitor) {
++            this.visitor = visitor;
++        }
++
++        @Override
++        public Optional<T> accept(final String asString) {
++            if (visited++ >= 32) { // Paper - cap at 32 (matches kit AC R1 "32 or fewer renders unchanged"; upstream uses > 32, deliberate 1-step divergence to enforce AC literally)
++                throw EX;
++            }
++            return this.visitor.accept(asString);
++        }
++    }
++    // Paper end - Count visited parts
+ 
+     @Override
+     public MutableComponent resolve(@Nullable CommandSourceStack source, @Nullable Entity sender, int depth) throws CommandSyntaxException {
+diff --git a/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 082e60072c73e1a30e8a287afd240db80bdd7286..64c1d50eafb57e07c4bd89e3f638aa19eec94551 100644
+--- a/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -918,9 +918,8 @@ public class ServerGamePacketListenerImpl implements ServerPlayerConnection, Tic
+             server.scheduleOnMain(() -> this.disconnect(Component.translatable("disconnect.spam", new Object[0]), org.bukkit.event.player.PlayerKickEvent.Cause.SPAM)); // Paper - kick event cause
+             return;
+         }
+-        // Paper start
+-        String str = packet.getCommand(); int index = -1;
+-        if (str.length() > 64 && ((index = str.indexOf(' ')) == -1 || index >= 64)) {
++        // Paper start - route through testable predicate
++        if (shouldKickAsSpam(packet.getCommand())) {
+             server.scheduleOnMain(() -> this.disconnect(Component.translatable("disconnect.spam", new Object[0]), org.bukkit.event.player.PlayerKickEvent.Cause.SPAM)); // Paper - kick event cause
+             return;
+         }
+@@ -948,6 +947,12 @@ public class ServerGamePacketListenerImpl implements ServerPlayerConnection, Tic
+ 
+                     this.server.scheduleOnMain(() -> { // This needs to be on main
+                         ParseResults<CommandSourceStack> parseresults = this.server.getCommands().getDispatcher().parse(stringreader, this.player.createCommandSourceStack());
++                        // Paper start - Handle non-recoverable exceptions
++                        if (hasTypedNbtException(parseresults)) {
++                            this.disconnect(Component.translatable("disconnect.spam"), org.bukkit.event.player.PlayerKickEvent.Cause.SPAM);
++                            return;
++                        }
++                        // Paper end - Handle non-recoverable exceptions
+ 
+                         this.server.getCommands().getDispatcher().getCompletionSuggestions(parseresults).thenAccept((suggestions) -> {
+                             // Paper start - Brigadier API
+@@ -3784,4 +3789,17 @@ public class ServerGamePacketListenerImpl implements ServerPlayerConnection, Tic
+ 
+         InteractionResult run(ServerPlayer player, Entity entity, InteractionHand hand);
+     }
++
++    // Paper start - testable predicates extracted from handleCustomCommandSuggestions
++    public static boolean shouldKickAsSpam(String command) {
++        final int idx = command.indexOf(' ');
++        return command.length() > 64 && (idx == -1 || idx >= 64);
++    }
++
++    public static boolean hasTypedNbtException(com.mojang.brigadier.ParseResults<?> parseresults) {
++        return !parseresults.getExceptions().isEmpty()
++            && parseresults.getExceptions().values().stream()
++                .anyMatch(e -> e instanceof io.papermc.paper.brigadier.TagParseCommandSyntaxException);
++    }
++    // Paper end - testable predicates
+ }
+diff --git a/src/test/java/io/papermc/paper/brigadier/DispatcherShortCircuitTest.java b/src/test/java/io/papermc/paper/brigadier/DispatcherShortCircuitTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ffc4902c56d8dd3b47b1c93791e66ae8489d019
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/brigadier/DispatcherShortCircuitTest.java
+@@ -0,0 +1,169 @@
++package io.papermc.paper.brigadier;
++
++import com.mojang.brigadier.CommandDispatcher;
++import com.mojang.brigadier.ParseResults;
++import com.mojang.brigadier.StringReader;
++import com.mojang.brigadier.arguments.ArgumentType;
++import com.mojang.brigadier.builder.LiteralArgumentBuilder;
++import com.mojang.brigadier.builder.RequiredArgumentBuilder;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.suggestion.Suggestions;
++import com.mojang.brigadier.suggestion.SuggestionsBuilder;
++import org.junit.Test;
++
++import java.util.Collection;
++import java.util.Collections;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertTrue;
++
++public class DispatcherShortCircuitTest {
++
++    private static final Object SOURCE = new Object();
++
++    @Test
++    public void typedExceptionPropagatesIntoExceptionMap() {
++        CommandDispatcher<Object> dispatcher = new CommandDispatcher<>();
++        LiteralArgumentBuilder<Object> root = LiteralArgumentBuilder.literal("nbt");
++        ArgumentType<Object> typedThrower = new ThrowingArgumentType(true);
++        RequiredArgumentBuilder<Object, Object> arg = RequiredArgumentBuilder.argument("payload", typedThrower);
++        arg.executes(ctx -> 0);
++        root.then(arg);
++        dispatcher.register(root);
++
++        ParseResults<Object> results = dispatcher.parse("nbt {foo:bar}", SOURCE);
++
++        assertFalse("typed-throw must record into exceptions map", results.getExceptions().isEmpty());
++        boolean found = results.getExceptions().values().stream()
++            .anyMatch(e -> e instanceof TagParseCommandSyntaxException);
++        assertTrue("ParseResults exception map must contain TagParseCommandSyntaxException", found);
++    }
++
++    @Test
++    public void genericRuntimeExceptionDoesNotShortCircuitOrProduceTypedException() {
++        CommandDispatcher<Object> dispatcher = new CommandDispatcher<>();
++        LiteralArgumentBuilder<Object> root = LiteralArgumentBuilder.literal("nbt");
++        ArgumentType<Object> genericThrower = new ThrowingArgumentType(false);
++        RequiredArgumentBuilder<Object, Object> arg = RequiredArgumentBuilder.argument("payload", genericThrower);
++        arg.executes(ctx -> 0);
++        root.then(arg);
++        dispatcher.register(root);
++
++        ParseResults<Object> results = dispatcher.parse("nbt {foo:bar}", SOURCE);
++
++        assertNotNull(results);
++        boolean typed = results.getExceptions().values().stream()
++            .anyMatch(e -> e instanceof TagParseCommandSyntaxException);
++        assertFalse("generic RuntimeException must not be reported as a typed NBT exception", typed);
++    }
++
++    @Test
++    public void typedExceptionSkipsAlternateChild() {
++        AtomicBoolean alternateAttempted = new AtomicBoolean(false);
++
++        CommandDispatcher<Object> dispatcher = new CommandDispatcher<>();
++        // Brigadier merges argument nodes by name on registration, so the two alternative
++        // argument paths must use DISTINCT names to coexist as siblings under the same literal.
++        // Paper rewires CommandNode.children to a TreeMap (alphabetical sort), so the alphabetical
++        // ordering of argument names determines iteration order: the throwing argument is named
++        // with an 'a' prefix to ensure it is iterated before the instrumented one.
++        LiteralArgumentBuilder<Object> root = LiteralArgumentBuilder.literal("danger");
++        RequiredArgumentBuilder<Object, Object> firstArg = RequiredArgumentBuilder.argument(
++            "aThrowingArg", new ThrowingArgumentType(true));
++        firstArg.executes(ctx -> 0);
++        root.then(firstArg);
++
++        RequiredArgumentBuilder<Object, Object> secondArg = RequiredArgumentBuilder.argument(
++            "zInstrumentedArg", new InstrumentedArgumentType(alternateAttempted));
++        secondArg.executes(ctx -> 0);
++        root.then(secondArg);
++
++        dispatcher.register(root);
++
++        ParseResults<Object> results = dispatcher.parse("danger anything", SOURCE);
++
++        assertTrue("typed exception must reach the exceptions map",
++            results.getExceptions().values().stream().anyMatch(e -> e instanceof TagParseCommandSyntaxException));
++        assertFalse("alternate child must NOT be attempted after a typed NBT exception",
++            alternateAttempted.get());
++    }
++
++    @Test
++    public void genericRuntimeExceptionAllowsAlternateChild() {
++        AtomicBoolean alternateAttempted = new AtomicBoolean(false);
++
++        CommandDispatcher<Object> dispatcher = new CommandDispatcher<>();
++        LiteralArgumentBuilder<Object> root = LiteralArgumentBuilder.literal("danger");
++        RequiredArgumentBuilder<Object, Object> firstArg = RequiredArgumentBuilder.argument(
++            "aThrowingArg", new ThrowingArgumentType(false));
++        firstArg.executes(ctx -> 0);
++        root.then(firstArg);
++
++        RequiredArgumentBuilder<Object, Object> secondArg = RequiredArgumentBuilder.argument(
++            "zInstrumentedArg", new InstrumentedArgumentType(alternateAttempted));
++        secondArg.executes(ctx -> 0);
++        root.then(secondArg);
++
++        dispatcher.register(root);
++
++        dispatcher.parse("danger anything", SOURCE);
++
++        assertTrue("alternate child must be attempted after a generic RuntimeException",
++            alternateAttempted.get());
++    }
++
++    private static final class InstrumentedArgumentType implements ArgumentType<Object> {
++        private final AtomicBoolean tried;
++
++        private InstrumentedArgumentType(AtomicBoolean tried) {
++            this.tried = tried;
++        }
++
++        @Override
++        public Object parse(StringReader reader) throws CommandSyntaxException {
++            this.tried.set(true);
++            // consume the rest of the input so the parse appears to "succeed"
++            while (reader.canRead()) reader.skip();
++            return new Object();
++        }
++
++        @Override
++        public <S> CompletableFuture<Suggestions> listSuggestions(com.mojang.brigadier.context.CommandContext<S> context, SuggestionsBuilder builder) {
++            return Suggestions.empty();
++        }
++
++        @Override
++        public Collection<String> getExamples() {
++            return Collections.emptyList();
++        }
++    }
++
++    private static final class ThrowingArgumentType implements ArgumentType<Object> {
++        private final boolean throwTyped;
++
++        private ThrowingArgumentType(boolean throwTyped) {
++            this.throwTyped = throwTyped;
++        }
++
++        @Override
++        public Object parse(StringReader reader) throws CommandSyntaxException {
++            if (throwTyped) {
++                throw new TagParseCommandSyntaxException("NBT tag is too complex, depth > 512");
++            }
++            throw new RuntimeException("boom");
++        }
++
++        @Override
++        public <S> CompletableFuture<Suggestions> listSuggestions(com.mojang.brigadier.context.CommandContext<S> context, SuggestionsBuilder builder) {
++            return Suggestions.empty();
++        }
++
++        @Override
++        public Collection<String> getExamples() {
++            return Collections.emptyList();
++        }
++    }
++}
+diff --git a/src/test/java/io/papermc/paper/chat/SeparatorValidationTest.java b/src/test/java/io/papermc/paper/chat/SeparatorValidationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f845af3875c7bea894358dadc9f04c2e69d0c7e2
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/chat/SeparatorValidationTest.java
+@@ -0,0 +1,76 @@
++package io.papermc.paper.chat;
++
++import net.minecraft.network.chat.Component;
++import net.minecraft.network.chat.ComponentUtils;
++import net.minecraft.network.chat.MutableComponent;
++import net.minecraft.network.chat.contents.NbtContents;
++import net.minecraft.network.chat.contents.SelectorContents;
++import net.minecraft.network.chat.contents.TranslatableContents;
++import org.bukkit.support.AbstractTestingBase;
++import org.junit.Test;
++
++import java.util.Optional;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++public class SeparatorValidationTest extends AbstractTestingBase {
++
++    @Test
++    public void plainLiteralIsValid() {
++        Component literal = Component.literal(", ");
++        assertTrue(ComponentUtils.isValidSelector(literal));
++    }
++
++    @Test
++    public void nbtContentsIsInvalid() {
++        NbtContents nbt = new NbtContents("foo", false, Optional.empty(), null);
++        Component component = MutableComponent.create(nbt);
++        assertFalse(ComponentUtils.isValidSelector(component));
++    }
++
++    @Test
++    public void selectorContentsIsInvalid() {
++        SelectorContents sel = new SelectorContents("@p", Optional.empty());
++        Component component = MutableComponent.create(sel);
++        assertFalse(ComponentUtils.isValidSelector(component));
++    }
++
++    @Test
++    public void translatableWithNbtArgIsInvalid() {
++        NbtContents nbt = new NbtContents("foo", false, Optional.empty(), null);
++        MutableComponent nbtComponent = MutableComponent.create(nbt);
++        TranslatableContents tc = new TranslatableContents("purpur.test.nbtarg", "%s", new Object[]{nbtComponent});
++        Component component = MutableComponent.create(tc);
++        assertFalse(ComponentUtils.isValidSelector(component));
++    }
++
++    @Test
++    public void translatableWithSelectorArgIsInvalid() {
++        SelectorContents sel = new SelectorContents("@p", Optional.empty());
++        MutableComponent selComponent = MutableComponent.create(sel);
++        TranslatableContents tc = new TranslatableContents("purpur.test.selarg", "%s", new Object[]{selComponent});
++        Component component = MutableComponent.create(tc);
++        assertFalse(ComponentUtils.isValidSelector(component));
++    }
++
++    @Test
++    public void translatableWithPlainArgIsValid() {
++        TranslatableContents tc = new TranslatableContents("purpur.test.plainarg", "%s",
++            new Object[]{Component.literal("plain")});
++        Component component = MutableComponent.create(tc);
++        assertTrue(ComponentUtils.isValidSelector(component));
++    }
++
++    @Test
++    public void recursionThroughTranslatableArgs() {
++        NbtContents nbt = new NbtContents("foo", false, Optional.empty(), null);
++        MutableComponent nbtComp = MutableComponent.create(nbt);
++        TranslatableContents inner = new TranslatableContents("purpur.test.inner", "%s", new Object[]{nbtComp});
++        MutableComponent innerComp = MutableComponent.create(inner);
++        TranslatableContents outer = new TranslatableContents("purpur.test.outer", "%s", new Object[]{innerComp});
++        Component component = MutableComponent.create(outer);
++        assertFalse("validity check must recurse through nested translatable args",
++            ComponentUtils.isValidSelector(component));
++    }
++}
+diff --git a/src/test/java/io/papermc/paper/chat/TranslatableContentsVisitCapTest.java b/src/test/java/io/papermc/paper/chat/TranslatableContentsVisitCapTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b33a710a856351a0cbd91258a18578f26a5365db
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/chat/TranslatableContentsVisitCapTest.java
+@@ -0,0 +1,72 @@
++package io.papermc.paper.chat;
++
++import net.minecraft.network.chat.MutableComponent;
++import net.minecraft.network.chat.contents.TranslatableContents;
++import org.junit.Test;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++public class TranslatableContentsVisitCapTest {
++
++    @Test
++    public void selfReferentialArgumentTerminatesWithEllipsis() {
++        // Fallback must include literal text around the %s so each recursion level emits an accept(),
++        // which is what drives the visit counter. A pure "%s" fallback decomposes to a single Component
++        // part (the arg) and skips accept() entirely, so the counter never trips and pure-Component
++        // recursion would StackOverflowError — matching upstream Paper's same limitation but irrelevant
++        // in practice because the network protocol caps Component JSON depth so reference cycles like
++        // this aren't constructible by clients. The cap is what guards player-supplied components whose
++        // fallbacks (or resolved translations) carry literal text around args.
++        Object[] args = new Object[1];
++        TranslatableContents tc = new TranslatableContents("purpur.test.self_ref", "[%s]", args);
++        args[0] = MutableComponent.create(tc);
++
++        List<String> collected = new ArrayList<>();
++        tc.visit(s -> {
++            collected.add(s);
++            return Optional.empty();
++        });
++
++        assertTrue("self-referential translation must terminate", collected.size() > 0);
++        assertTrue("self-referential translation must end with '...' placeholder",
++            collected.contains("..."));
++    }
++
++    @Test
++    public void crossReferentialChainTerminates() {
++        Object[] argsX = new Object[1];
++        Object[] argsY = new Object[1];
++        TranslatableContents tcX = new TranslatableContents("purpur.test.cross_x", "<%s>", argsX);
++        TranslatableContents tcY = new TranslatableContents("purpur.test.cross_y", "<%s>", argsY);
++        argsX[0] = MutableComponent.create(tcY);
++        argsY[0] = MutableComponent.create(tcX);
++
++        List<String> collected = new ArrayList<>();
++        tcX.visit(s -> {
++            collected.add(s);
++            return Optional.empty();
++        });
++
++        assertTrue("X->Y->X chain must terminate", collected.size() > 0);
++        assertTrue("X->Y->X chain must end with '...' placeholder",
++            collected.contains("..."));
++    }
++
++    @Test
++    public void shortLegitimateComponentRendersWithoutEllipsis() {
++        TranslatableContents tc = new TranslatableContents("purpur.test.short", "hello world", new Object[0]);
++
++        List<String> collected = new ArrayList<>();
++        tc.visit(s -> {
++            collected.add(s);
++            return Optional.empty();
++        });
++
++        assertFalse("legitimate short component must not emit '...'", collected.contains("..."));
++    }
++}
+diff --git a/src/test/java/io/papermc/paper/nbt/TagParserDepthTest.java b/src/test/java/io/papermc/paper/nbt/TagParserDepthTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d8fc99a59e51a99be33cdb347e0c9b8b848a098
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/nbt/TagParserDepthTest.java
+@@ -0,0 +1,111 @@
++package io.papermc.paper.nbt;
++
++import com.mojang.brigadier.StringReader;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import io.papermc.paper.brigadier.TagParseCommandSyntaxException;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.TagParser;
++import org.junit.Test;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.fail;
++
++public class TagParserDepthTest {
++
++    @Test
++    public void typedExceptionNamespaceMatchesUpstreamPaper() {
++        assertEquals("io.papermc.paper.brigadier", TagParseCommandSyntaxException.class.getPackage().getName());
++    }
++
++    @Test
++    public void typedExceptionDistinguishableViaInstanceof() {
++        TagParseCommandSyntaxException ex = new TagParseCommandSyntaxException("depth");
++        assertTrue(ex instanceof CommandSyntaxException);
++    }
++
++    @Test
++    public void parse512DeepCompoundSucceeds() throws CommandSyntaxException {
++        String s = repeat("{a:", 512) + "1b" + repeat("}", 512);
++        CompoundTag tag = TagParser.parseTag(s);
++        assertNotNull(tag);
++    }
++
++    @Test
++    public void parse513DeepCompoundThrowsTyped() {
++        String s = repeat("{a:", 513) + "1b" + repeat("}", 513);
++        try {
++            TagParser.parseTag(s);
++            fail("513-deep compound must throw");
++        } catch (CommandSyntaxException e) {
++            assertTrue("expected TagParseCommandSyntaxException, got " + e.getClass().getName(),
++                e instanceof TagParseCommandSyntaxException);
++        }
++    }
++
++    @Test
++    public void parse513DeepListThrowsTyped() {
++        String s = "{a:" + repeat("[", 513) + "1b" + repeat("]", 513) + "}";
++        try {
++            TagParser.parseTag(s);
++            fail("513-deep list must throw");
++        } catch (CommandSyntaxException e) {
++            assertTrue(e instanceof TagParseCommandSyntaxException);
++        }
++    }
++
++    @Test
++    public void parse513DeepMixedCompoundAndListThrowsTyped() {
++        StringBuilder sb = new StringBuilder();
++        StringBuilder closer = new StringBuilder();
++        for (int i = 0; i < 256; i++) {
++            sb.append("{a:[");
++            closer.insert(0, "]}");
++        }
++        sb.append("{a:1b}");
++        closer.insert(0, "");
++        String s = sb.toString() + closer.toString();
++        try {
++            TagParser.parseTag(s);
++            fail("513-deep mixed structure must throw");
++        } catch (CommandSyntaxException e) {
++            assertTrue("expected TagParseCommandSyntaxException, got " + e.getClass().getName(),
++                e instanceof TagParseCommandSyntaxException);
++        }
++    }
++
++    @Test
++    public void siblingStructuresAt512DepthEachDoNotFalselyAccumulate() throws CommandSyntaxException {
++        String deep = repeat("{a:", 511) + "1b" + repeat("}", 511);
++        String s = "{a:" + deep + ",b:" + deep + "}";
++        CompoundTag tag = TagParser.parseTag(s);
++        assertNotNull(tag);
++    }
++
++    @Test
++    public void freshParserResetsDepthBetweenInvocations() throws CommandSyntaxException {
++        String deep = repeat("{a:", 512) + "1b" + repeat("}", 512);
++        CompoundTag first = TagParser.parseTag(deep);
++        assertNotNull(first);
++        CompoundTag second = TagParser.parseTag(deep);
++        assertNotNull(second);
++    }
++
++    @Test
++    public void parseAsStringReaderConstructorAlsoEnforcesBound() {
++        String s = repeat("{a:", 513) + "1b" + repeat("}", 513);
++        try {
++            new TagParser(new StringReader(s)).readStruct();
++            fail("readStruct must enforce the same depth bound as parseTag");
++        } catch (CommandSyntaxException e) {
++            assertTrue(e instanceof TagParseCommandSyntaxException);
++        }
++    }
++
++    private static String repeat(String unit, int n) {
++        StringBuilder sb = new StringBuilder(unit.length() * n);
++        for (int i = 0; i < n; i++) sb.append(unit);
++        return sb.toString();
++    }
++}
+diff --git a/src/test/java/io/papermc/paper/network/SuggestionHandlerTypedExceptionTest.java b/src/test/java/io/papermc/paper/network/SuggestionHandlerTypedExceptionTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..96d3e70abaf867a611cd5f0da7a3ef80942f82d4
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/network/SuggestionHandlerTypedExceptionTest.java
+@@ -0,0 +1,68 @@
++package io.papermc.paper.network;
++
++import com.mojang.brigadier.CommandDispatcher;
++import com.mojang.brigadier.ParseResults;
++import com.mojang.brigadier.builder.LiteralArgumentBuilder;
++import com.mojang.brigadier.builder.RequiredArgumentBuilder;
++import com.mojang.brigadier.context.CommandContextBuilder;
++import io.papermc.paper.brigadier.TagParseCommandSyntaxException;
++import net.minecraft.server.network.ServerGamePacketListenerImpl;
++import org.bukkit.support.AbstractTestingBase;
++import org.junit.Test;
++
++import java.util.LinkedHashMap;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++/**
++ * Verifies the exception-map inspection predicate used in
++ * {@link ServerGamePacketListenerImpl#handleCustomCommandSuggestions} to short-circuit a
++ * tab-complete request when the dispatcher parse surfaced a non-recoverable NBT exception.
++ * Exercises the real production helper {@code ServerGamePacketListenerImpl.hasTypedNbtException(ParseResults)}
++ * rather than a copy, so the test fails if the production predicate drifts. The disconnect
++ * side-effect and the early-return-before-getCompletionSuggestions are verified by source
++ * inspection at that location.
++ */
++public class SuggestionHandlerTypedExceptionTest extends AbstractTestingBase {
++
++    @Test
++    public void typedExceptionInMapIsDetected() {
++        ParseResults<Object> results = parseResultsWith(new TagParseCommandSyntaxException("test"));
++        assertTrue(ServerGamePacketListenerImpl.hasTypedNbtException(results));
++    }
++
++    @Test
++    public void genericCommandSyntaxExceptionIsNotDetected() {
++        ParseResults<Object> results = parseResultsWith(
++            com.mojang.brigadier.exceptions.CommandSyntaxException.BUILT_IN_EXCEPTIONS
++                .literalIncorrect().create("test"));
++        assertFalse(ServerGamePacketListenerImpl.hasTypedNbtException(results));
++    }
++
++    @Test
++    public void emptyExceptionMapIsNotDetected() {
++        ParseResults<Object> results = parseResultsWith(null);
++        assertFalse(ServerGamePacketListenerImpl.hasTypedNbtException(results));
++    }
++
++    private static ParseResults<Object> parseResultsWith(com.mojang.brigadier.exceptions.CommandSyntaxException ex) {
++        CommandDispatcher<Object> dispatcher = new CommandDispatcher<>();
++        LiteralArgumentBuilder<Object> root = LiteralArgumentBuilder.literal("test");
++        RequiredArgumentBuilder<Object, Integer> arg = RequiredArgumentBuilder.argument("arg",
++            com.mojang.brigadier.arguments.IntegerArgumentType.integer());
++        arg.executes(ctx -> 0);
++        root.then(arg);
++        dispatcher.register(root);
++
++        LinkedHashMap<com.mojang.brigadier.tree.CommandNode<Object>,
++            com.mojang.brigadier.exceptions.CommandSyntaxException> errors = new LinkedHashMap<>();
++        if (ex != null) {
++            com.mojang.brigadier.tree.CommandNode<Object> child = dispatcher.getRoot().getChild("test");
++            errors.put(child, ex);
++        }
++        com.mojang.brigadier.context.CommandContextBuilder<Object> ctx =
++            new CommandContextBuilder<>(dispatcher, new Object(), dispatcher.getRoot(), 0);
++        return new ParseResults<>(ctx, new com.mojang.brigadier.StringReader("test"), errors);
++    }
++}
+diff --git a/src/test/java/io/papermc/paper/network/SuggestionPacketSizeTest.java b/src/test/java/io/papermc/paper/network/SuggestionPacketSizeTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..00f91d7cd8e31decdae3932c67b972d67207dd7c
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/network/SuggestionPacketSizeTest.java
+@@ -0,0 +1,47 @@
++package io.papermc.paper.network;
++
++import io.netty.buffer.Unpooled;
++import io.netty.handler.codec.DecoderException;
++import net.minecraft.network.FriendlyByteBuf;
++import net.minecraft.network.protocol.game.ServerboundCommandSuggestionPacket;
++import org.junit.Test;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++
++public class SuggestionPacketSizeTest {
++
++    private static FriendlyByteBuf buildBuf(int id, String command) {
++        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
++        buf.writeVarInt(id);
++        buf.writeUtf(command, command.length());
++        return buf;
++    }
++
++    @Test
++    public void atCapDecodes() {
++        String cmd = repeat('a', 2048);
++        FriendlyByteBuf buf = buildBuf(0, cmd);
++        ServerboundCommandSuggestionPacket pkt = new ServerboundCommandSuggestionPacket(buf);
++        assertEquals(cmd, pkt.getCommand());
++    }
++
++    @Test
++    public void overCapThrows() {
++        String cmd = repeat('a', 2049);
++        FriendlyByteBuf buf = buildBuf(0, cmd);
++        try {
++            new ServerboundCommandSuggestionPacket(buf);
++            org.junit.Assert.fail("decoding a 2049-char command must raise the protocol's length-exceeded error");
++        } catch (DecoderException | IllegalArgumentException expected) {
++            assertTrue("expected protocol length error, got: " + expected.getMessage(),
++                expected.getMessage() != null && expected.getMessage().toLowerCase().contains("longer than"));
++        }
++    }
++
++    private static String repeat(char c, int n) {
++        char[] arr = new char[n];
++        java.util.Arrays.fill(arr, c);
++        return new String(arr);
++    }
++}
+diff --git a/src/test/java/io/papermc/paper/network/SuggestionSpamKickTest.java b/src/test/java/io/papermc/paper/network/SuggestionSpamKickTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..67fd0f24b98ce0f9d12bb9d1e57d1632954f77c4
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/network/SuggestionSpamKickTest.java
+@@ -0,0 +1,47 @@
++package io.papermc.paper.network;
++
++import net.minecraft.server.network.ServerGamePacketListenerImpl;
++import org.bukkit.support.AbstractTestingBase;
++import org.junit.Test;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++/**
++ * Verifies the spam-kick predicate used in {@link ServerGamePacketListenerImpl#handleCustomCommandSuggestions}
++ * for long single-token tab-complete requests. The test exercises the real production helper
++ * {@code ServerGamePacketListenerImpl.shouldKickAsSpam(String)} rather than a copy, so wording or
++ * boundary drift in production will fail these tests. The dispatch-ordering property (predicate
++ * runs before the tab-complete executor dispatch) is verified by source inspection at that
++ * location.
++ */
++public class SuggestionSpamKickTest extends AbstractTestingBase {
++
++    @Test
++    public void sixtyFiveCharNoSpaceKicks() {
++        assertTrue(ServerGamePacketListenerImpl.shouldKickAsSpam(repeat('a', 65)));
++    }
++
++    @Test
++    public void twoHundredCharFirstSpaceAt70Kicks() {
++        String cmd = repeat('a', 70) + " " + repeat('b', 129);
++        assertTrue(ServerGamePacketListenerImpl.shouldKickAsSpam(cmd));
++    }
++
++    @Test
++    public void twoHundredCharFirstSpaceAt5Permitted() {
++        String cmd = repeat('a', 5) + " " + repeat('b', 194);
++        assertFalse(ServerGamePacketListenerImpl.shouldKickAsSpam(cmd));
++    }
++
++    @Test
++    public void sixtyFourCharNoSpacePermitted() {
++        assertFalse(ServerGamePacketListenerImpl.shouldKickAsSpam(repeat('a', 64)));
++    }
++
++    private static String repeat(char c, int n) {
++        char[] arr = new char[n];
++        java.util.Arrays.fill(arr, c);
++        return new String(arr);
++    }
++}

@@ -25,10 +25,36 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 
 - Prevents pufferfish.yml, server.properties, config/paper-world.yml, config/paper-world-defaults.yml, and config/paper-global.yml from being written to by the server.
 - Suppresses "lost connection" messages from the console.
+- Backports PaperMC patch [0931 "Improve tag parser handling"](https://github.com/PaperMC/Paper-archive/blob/ver/1.21.4/patches/server/0931-Improve-tag-parser-handling.patch) (2024-02-05, never released for the 1.19.4 branch) to mitigate the NBT-bomb / tab-complete / translatable-recursion class of denial-of-service and world-corruption vectors against unauthenticated joined players. See the [deliverable comparison](#security-backport-of-papermc-patch-0931) below.
 
 EXPERIMENTAL (may break things):
 
 - Keep chunks loaded while a villager is being cured.
+
+- Security backport of PaperMC patch 0931:
+
+`patches/server/0316-Improve-tag-parser-handling.patch` (1026 lines, 8 source files + 7 JUnit test classes) backports the applicable hunks of upstream PaperMC patch 0931 to the 1.19.4 source tree, with three intentional deviations from upstream that match the kit acceptance criteria more strictly or close gaps that upstream Paper also has.
+
+| Property | Upstream Paper 0931 | true-og/Purpur 0316 |
+|---|---|---|
+| NBT depth cap | yes (`> 512`) | yes (`> 512`) |
+| Typed exception (`io.papermc.paper.brigadier.TagParseCommandSyntaxException`) | yes | yes |
+| Translatable visit cap | `> 32` (33-part limit) | `>= 32` (32-part limit, matches kit AC) |
+| Separator validation | root contents + translatable args only | root + args + **siblings** + **hover `SHOW_TEXT`** (closes upstream gap) |
+| `TagParser` depth restored on mid-structure throw | no | yes (`try/finally` + restore inside `increaseDepth`) |
+| `SelectorPattern` error masking | applied | skipped (class does not exist in 1.19.4) |
+| Suggestion packet UTF cap (`readUtf 32500 → 2048`) | applied | pre-existing in Purpur from prior Paper hardening |
+| Long-no-space tab-complete spam-kick | applied | pre-existing in Purpur; predicate refactored into testable `ServerGamePacketListenerImpl.shouldKickAsSpam(String)` |
+| Tab-complete disconnect on typed NBT parse exception | applied | applied; predicate refactored into testable `ServerGamePacketListenerImpl.hasTypedNbtException(ParseResults)` |
+| Brigadier `CommandDispatcher` short-circuit on typed NBT exception | applied | applied |
+
+The three deviations toward stricter security or testability:
+
+1. **Translatable visit cap `>= 32`** — upstream's `> 32` allows 33 parts through before degrading. The change to `>= 32` makes the cap satisfy the literal kit AC "32 or fewer renders unchanged."
+2. **`isValidSelector` traverses siblings and hover `SHOW_TEXT`** — upstream Paper's check only inspects root contents and translatable args, but `ComponentUtils.updateForEntity` (the resolver this guards) also recurses through siblings and hover text. A separator with a plain root but an `NbtContents` / `SelectorContents` sibling would have passed the upstream check yet still triggered separator amplification. The Purpur version uses a depth-bounded recursion (matching `updateForEntity`'s own guard of 100) that fails closed on overflow.
+3. **`TagParser` depth field is restored via `try/finally`** — upstream Paper increments and decrements depth only on the happy path, so a syntax error thrown mid-structure leaks the increment. Purpur wraps `readStruct` and `readListTag` bodies in `try { … } finally { this.depth--; }` and adds a defensive restore inside `increaseDepth` itself. Not exploitable via the standard `TagParser.parseTag(String)` entry path (fresh parser per call) but matters for any reused parser instance.
+
+The 32-test JUnit suite covers every acceptance criterion of both backport kits (`context/kits/cavekit-world-data-integrity.md`, `context/kits/cavekit-runtime-dos-protection.md`) and runs both in isolation and as part of the full server test suite.
 
 ## Downloads
 Downloads can be obtained from the [downloads page](https://purpurmc.org/downloads/) or the [downloads API](https://api.purpurmc.org).

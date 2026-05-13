@@ -8,3 +8,9 @@
 # To import classes from the vanilla Minecraft jar use `minecraft` as the artifactId:
 #     minecraft net.minecraft.world.level.entity.LevelEntityGetterAdapter
 #     minecraft net/minecraft/world/level/entity/LevelEntityGetter.java
+
+# Patch 0316 — Improve tag parser handling (backport of PaperMC patch 0931)
+minecraft net.minecraft.nbt.TagParser
+minecraft net.minecraft.network.chat.contents.NbtContents
+minecraft net.minecraft.network.chat.contents.SelectorContents
+minecraft net.minecraft.network.chat.contents.TranslatableContents
