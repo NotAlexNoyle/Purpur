@@ -25,15 +25,12 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 
 - Prevents pufferfish.yml, server.properties, config/paper-world.yml, config/paper-world-defaults.yml, and config/paper-global.yml from being written to by the server.
 - Suppresses "lost connection" messages from the console.
-- Backports PaperMC patch [0931 "Improve tag parser handling"](https://github.com/PaperMC/Paper-archive/blob/ver/1.21.4/patches/server/0931-Improve-tag-parser-handling.patch) (2024-02-05, never released for the 1.19.4 branch) to mitigate the NBT-bomb / tab-complete / translatable-recursion class of denial-of-service and world-corruption vectors against unauthenticated joined players. See the [deliverable comparison](#security-backport-of-papermc-patch-0931) below.
 
 EXPERIMENTAL (may break things):
 
 - Keep chunks loaded while a villager is being cured.
 
-- Security backport of PaperMC patch 0931:
-
-`patches/server/0316-Improve-tag-parser-handling.patch` (1026 lines, 8 source files + 7 JUnit test classes) backports the applicable hunks of upstream PaperMC patch 0931 to the 1.19.4 source tree, with three intentional deviations from upstream that match the kit acceptance criteria more strictly or close gaps that upstream Paper also has.
+- Backports PaperMC patch [0931 "Improve tag parser handling"](https://github.com/PaperMC/Paper-archive/blob/ver/1.21.4/patches/server/0931-Improve-tag-parser-handling.patch) (2024-02-05, never released for the 1.19.4 branch) to mitigate the NBT-bomb / tab-complete / translatable-recursion class of denial-of-service and world-corruption vectors against unauthenticated joined players. Includes tests, and three intentional deviations from upstream that match the acceptance criteria more strictly or close gaps that upstream Paper also has.
 
 | Property | Upstream Paper 0931 | true-og/Purpur 0316 |
 |---|---|---|
@@ -54,23 +51,6 @@ The three deviations toward stricter security or testability:
 2. **`isValidSelector` traverses siblings and hover `SHOW_TEXT`** — upstream Paper's check only inspects root contents and translatable args, but `ComponentUtils.updateForEntity` (the resolver this guards) also recurses through siblings and hover text. A separator with a plain root but an `NbtContents` / `SelectorContents` sibling would have passed the upstream check yet still triggered separator amplification. The Purpur version uses a depth-bounded recursion (matching `updateForEntity`'s own guard of 100) that fails closed on overflow.
 3. **`TagParser` depth field is restored via `try/finally`** — upstream Paper increments and decrements depth only on the happy path, so a syntax error thrown mid-structure leaks the increment. Purpur wraps `readStruct` and `readListTag` bodies in `try { … } finally { this.depth--; }` and adds a defensive restore inside `increaseDepth` itself. Not exploitable via the standard `TagParser.parseTag(String)` entry path (fresh parser per call) but matters for any reused parser instance.
 
-The 32-test JUnit suite covers every acceptance criterion of both backport kits (`context/kits/cavekit-world-data-integrity.md`, `context/kits/cavekit-runtime-dos-protection.md`) and runs both in isolation and as part of the full server test suite.
-
-## Downloads
-Downloads can be obtained from the [downloads page](https://purpurmc.org/downloads/) or the [downloads API](https://api.purpurmc.org).
-
-[![Build Status](https://img.shields.io/github/actions/workflow/status/PurpurMC/Purpur/build.yml?branch=ver%2F1.19.3&event=push&label=Downloads&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABhWlDQ1BJQ0MgcHJvZmlsZQAAKJF9kT1Iw0AcxV9bxSIVh1YQcYhQnSyIiuimVShChVArtOpgcukXNGlIUlwcBdeCgx+LVQcXZ10dXAVB8APE0clJ0UVK/F9SaBHjwXE/3t173L0D/PUyU82OMUDVLCOViAuZ7KrQ9YogwujDEGYkZupzopiE5/i6h4+vdzGe5X3uz9Gj5EwG+ATiWaYbFvEG8dSmpXPeJ46woqQQnxOPGnRB4keuyy6/cS447OeZESOdmieOEAuFNpbbmBUNlXiSOKqoGuX7My4rnLc4q+Uqa96TvzCU01aWuU5zEAksYgkiBMioooQyLMRo1UgxkaL9uId/wPGL5JLJVQIjxwIqUCE5fvA/+N2tmZ8Yd5NCcaDzxbY/hoGuXaBRs+3vY9tunACBZ+BKa/krdWD6k/RaS4seAb3bwMV1S5P3gMsdoP9JlwzJkQI0/fk88H5G35QFwrdA95rbW3Mfpw9AmrpK3gAHh8BIgbLXPd4dbO/t3zPN/n4Ax9dyyerighsAAAAGYktHRAAAAAAAAPlDu38AAAAJcEhZcwAADdcAAA3XAUIom3gAAAAHdElNRQfmCBMWBjFhOpnxAAACyklEQVQ4y32TXWgdZRCGn8k5Z3e/bzcJRFuoDRqIIPGniaSl1qgXKYhiLUgleFESW1qQ4g94oVKQJmga0ILRBuvfheJFIbY3SmzRFsWgQrTQFlRoKSVXgcMxJiS7++1ukvHiNKGU6FzNDO8MMw8zwn9Yz5c6anKeChxiMk599aq8sZ5Obk3sGNd7G5aZCHJ+Oj8gAwD9I3rSJmyvzLHz+HG5frO+vOaNa3NXiUkKQj9hQ1jQgWrlyCCV6gIdtmBjoJwbPqgL+R08PDQkCUADwD0TerqzxFTJY++vz0l7c0q/F7P5+aNUqyvM2CU2RAV7hsek3XPs3/QHF7/YrSfrDVQrxrErdESNNTYByAp3NmWUTYaGGSuho+QltAGYRdqilChMeKbO4Ijang5+CVJmbcr20PG3n9NiY6ZOvCW9ACMHdDLIeDDIqTWmtAQJV6OMyhOTsqWBQQo/hvP7pFcWeDxwtAQxGqbEq3isI7EOjRy3NyuPPHtOur0UXWMQZXgAX78uP3sJpTBmyHfsGDmotdF+rQWObq/gnSCm9PQ3chnA3qgRgL5jmjXlTM/n7Ny8yJXRY2IA3tur0yaHF8blLoAzj2kaNNBpZvk2iGntuiZBHWLOtXJC3hbzV5SxtDq6yZmzCXOrsRezHNa4YBzlKGN6bQXryD96W+4PU14zGbw/oLMf79EPbAI2g7M9+smP3fqPKVAT81LnFWnzM1y9gYC9gWtwTD6MEsq+Y8Lm7DMZ7cZxt5/T5xd8Fy5SfuC6fA4QZjdd8eEX9eLwAZ1StHKiT1MARStnHtWZH7bpjKIVgKutmipq50O94Mr6+9oKR8ekyy7x5qd9/NmYslynK4WfUjWOqiAFgElZmY+41BTzcrAkW9d9ptO9etgU7I8S3vVyDtkY/JzPwoxXzCJjt6Uy+r/fuGq/3affezkPRSniJ0y2zsqT6+n+BfRHKWgwbKNIAAAAAElFTkSuQmCC)](https://purpurmc.org/downloads/)
-
-Downloads API endpoints:
- * List versions of Minecraft with builds available:
-   `https://api.purpurmc.org/v2/purpur`
- * List builds for a version of Minecraft:
-   `https://api.purpurmc.org/v2/purpur/<version>`
- * Download a specific build of a specific version:
-   `https://api.purpurmc.org/v2/purpur/<version>/<build>/download`
- * Download the latest build for a version of Minecraft:
-   `https://api.purpurmc.org/v2/purpur/<version>/latest/download`
-
 ## License
 All patches are licensed under the MIT license, unless otherwise noted in the patch headers.
 
@@ -78,31 +58,6 @@ All patches are licensed under the MIT license, unless otherwise noted in the pa
 
 See [PaperMC/Paper](https://github.com/PaperMC/Paper), and [PaperMC/Paperweight](https://github.com/PaperMC/paperweight) for the license of material used by this project.
 
-## bStats
-
-[![bStats Graph Data](https://bstats.org/signatures/server-implementation/Purpur.svg)](https://bstats.org/plugin/server-implementation/Purpur)
-
-
-## API
-
-### [Javadoc](https://purpurmc.org/javadoc)
-
-### Dependency Information
-Maven
-```xml
-<repository>
-    <id>purpur</id>
-    <url>https://repo.purpurmc.org/snapshots</url>
-</repository>
-```
-```xml
-<dependency>
-    <groupId>org.purpurmc.purpur</groupId>
-    <artifactId>purpur-api</artifactId>
-    <version>1.19.4-R0.1-SNAPSHOT</version>
-    <scope>provided</scope>
-</dependency>
-```
 
 Gradle
 ```kotlin
@@ -136,8 +91,6 @@ Patches are effectively just commits in either `Purpur-API` or `Purpur-Server`.
 To create one, just add a commit to either repo and run `./gradlew rebuildPatches`, and a 
 patch will be placed in the patches folder. Modifying commits will also modify its 
 corresponding patch file.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for more detailed information.
 
 
 #### Compiling
