@@ -1,0 +1,504 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sven <skbotnl@disroot.org>
+Date: Tue, 15 Sep 2026 09:30:09 +0200
+Subject: [PATCH] Save player data using a RocksDB database
+
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 9c01005751c0088f560f96401cdfdebbbda4e7ec..4d2e77efc362c1f14209e7e51b5ac1511e2abe65 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -38,6 +38,8 @@ dependencies {
+     }
+     // Paper end
+ 
++    implementation("org.rocksdb:rocksdbjni:10.10.1.1") // TrueOG - RocksDB for player data storage
++
+     implementation("org.mozilla:rhino-runtime:1.7.14") // Purpur
+     implementation("org.mozilla:rhino-engine:1.7.14") // Purpur
+     implementation("dev.omega24:upnp4j:1.0") // Purpur
+diff --git a/src/main/java/net/minecraft/server/Main.java b/src/main/java/net/minecraft/server/Main.java
+index cdbf10339a8e8846a8c364de483a0ccd95cd225a..0d725fb135088578f4218f23c40c35f7e621f9da 100644
+--- a/src/main/java/net/minecraft/server/Main.java
++++ b/src/main/java/net/minecraft/server/Main.java
+@@ -73,6 +73,8 @@ import net.minecraft.SharedConstants;
+ import org.bukkit.configuration.file.YamlConfiguration;
+ // CraftBukkit end
+ 
++import org.rocksdb.RocksDB; // TrueOG
++
+ public class Main {
+ 
+     private static final Logger LOGGER = LogUtils.getLogger();
+@@ -111,6 +113,7 @@ public class Main {
+             */ // CraftBukkit end
+ 
+         try {
++            RocksDB.loadLibrary(); // TrueOG
+ 
+             Path path = (Path) optionset.valueOf("pidFile"); // CraftBukkit
+ 
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe38ce8f09 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -1010,6 +1010,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         LOGGER.info("Closing Thread Pool");
+         Util.shutdownExecutors(); // Paper
+         LOGGER.info("Closing Server");
++        playerDataStorage.close(); // TrueOG
+         try {
+             net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
+         } catch (Exception e) {
+diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f65775798 100644
+--- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
++++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
+@@ -4,48 +4,161 @@ import com.mojang.datafixers.DataFixer;
+ import com.mojang.logging.LogUtils;
+ import java.io.File;
+ import javax.annotation.Nullable;
+-import net.minecraft.Util;
+ import net.minecraft.nbt.CompoundTag;
+ import net.minecraft.nbt.NbtIo;
+ import net.minecraft.nbt.NbtUtils;
+-import net.minecraft.server.level.ServerPlayer;
+-import net.minecraft.util.datafix.DataFixTypes;
+ import net.minecraft.world.entity.player.Player;
+ import org.slf4j.Logger;
+ 
+-// CraftBukkit start
+-import java.io.FileInputStream;
+-import java.io.InputStream;
+-import org.bukkit.craftbukkit.entity.CraftPlayer;
+-// CraftBukkit end
++// TrueOG start
++import org.rocksdb.BlockBasedTableConfig;
++import org.rocksdb.BloomFilter;
++import org.rocksdb.CompressionType;
++import org.rocksdb.Options;
++import org.rocksdb.RocksDB;
++import org.rocksdb.RocksDBException;
++import org.rocksdb.RocksIterator;
++import java.io.IOException;
++import java.io.DataInputStream;
++import java.io.DataOutputStream;
++import java.io.ByteArrayInputStream;
++import java.io.ByteArrayOutputStream;
++import java.nio.ByteBuffer;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.UUID;
++import java.util.ArrayList;
++import java.util.stream.Stream;
++// TrueOG end
+ 
+ public class PlayerDataStorage {
+ 
+     private static final Logger LOGGER = LogUtils.getLogger();
+-    private final File playerDir;
+     protected final DataFixer fixerUpper;
++    // TrueOG start
++    private final Options options;
++    private final RocksDB rocksDB;
++    private volatile boolean closed = false;
++    // TrueOG end
+ 
+     public PlayerDataStorage(LevelStorageSource.LevelStorageAccess session, DataFixer dataFixer) {
+         this.fixerUpper = dataFixer;
+-        this.playerDir = session.getLevelPath(LevelResource.PLAYER_DATA_DIR).toFile();
+-        this.playerDir.mkdirs();
++
++        // TrueOG start
++        try {
++            // For faster lookups
++            BlockBasedTableConfig tableConfig = new BlockBasedTableConfig().setFilterPolicy(new BloomFilter(10));
++
++            options = new Options()
++                    .setCreateIfMissing(true)
++                    .setMaxLogFileSize(104_857_60)
++                    .setKeepLogFileNum(5)
++                    .setCompressionType(CompressionType.LZ4_COMPRESSION)
++                    .setTableFormatConfig(tableConfig);
++            rocksDB = RocksDB.open(options, session.getLevelPath(LevelResource.ROOT).resolve("playerdatadb").toAbsolutePath().toString());
++        } catch (RocksDBException e) {
++            throw new RuntimeException(e);
++        }
++
++        migrate(session.getLevelPath(LevelResource.PLAYER_DATA_DIR));
++        // TrueOG end
+     }
+ 
+-    public void save(Player player) {
+-        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
++    // TrueOG start
++    public void close() {
++        closed = true;
+         try {
+-            CompoundTag nbttagcompound = player.saveWithoutId(new CompoundTag());
+-            File file = File.createTempFile(player.getStringUUID() + "-", ".dat", this.playerDir);
++            rocksDB.syncWal();
++            rocksDB.closeE();
++            options.close();
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to properly close player data", e);
++        }
++    }
++
++    private static byte[] getBytesFromUuid(UUID uuid) {
++        final ByteBuffer byteBuffer = ByteBuffer.wrap(new byte[16]);
++        byteBuffer.putLong(uuid.getMostSignificantBits());
++        byteBuffer.putLong(uuid.getLeastSignificantBits());
++        return byteBuffer.array();
++    }
++
++    private static UUID getUUIDFromBytes(byte[] bytes) {
++        final ByteBuffer byteBuffer = ByteBuffer.wrap(bytes);
++        final long mostSigBits = byteBuffer.getLong();
++        final long leastSigBits = byteBuffer.getLong();
++        return new UUID(mostSigBits, leastSigBits);
++    }
+ 
+-            NbtIo.writeCompressed(nbttagcompound, file);
+-            File file1 = new File(this.playerDir, player.getStringUUID() + ".dat");
+-            File file2 = new File(this.playerDir, player.getStringUUID() + ".dat_old");
++    public void migrate(Path playerDir) {
++        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
++        final byte[] migratedKey = "migrated".getBytes(StandardCharsets.US_ASCII);
++        if (!Files.isDirectory(playerDir)) {
++            try {
++                rocksDB.put(migratedKey, new byte[0]);
++            } catch (RocksDBException ignored) {}
++            return;
++        };
++        try {
++            if (rocksDB.get(migratedKey) != null) return;
++        } catch (RocksDBException e) {
++            throw new RuntimeException("Could not determine whether player data was migrated", e);
++        }
++        PlayerDataStorage.LOGGER.info("Migrating player data...");
++        try (Stream<Path> files = Files.list(playerDir)) {
++            boolean success = true;
++            for (Path path : files.filter(p -> p.getFileName().toString().endsWith(".dat")).toList()) {
++                File file = path.toFile();
++                if (!Files.isRegularFile(path)) continue;
++                String fileName = path.getFileName().toString();
++                String uuid = fileName.substring(0, fileName.length() - 4);
++                try {
++                    final CompoundTag nbttagcompound = NbtIo.readCompressed(file);
++                    final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
++                    NbtIo.write(nbttagcompound, new DataOutputStream(playerByteArrayOutputStream));
++                    rocksDB.put(getBytesFromUuid(UUID.fromString(uuid)), playerByteArrayOutputStream.toByteArray());
++                } catch (IOException | RocksDBException | IllegalArgumentException e) {
++                    PlayerDataStorage.LOGGER.warn("Failed to migrate player data for {}", uuid, e);
++                    success = false;
++                }
++            }
++            if (!success) {
++                throw new RuntimeException("Could not migrate player data of one or more players");
++            }
++            rocksDB.put(migratedKey, new byte[0]);
++            Files.move(playerDir, playerDir.resolveSibling(playerDir.getFileName() + "migrated"));
++            PlayerDataStorage.LOGGER.info("Migrated player data");
++        } catch (IOException | RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to migrate player data", e);
++            throw new RuntimeException("Could not successfully migrate player data", e);
++        }
++    }
+ 
+-            Util.safeReplaceFile(file1, file, file2);
++    public void saveCompoundTag(UUID uuid, CompoundTag compoundTag) {
++        if (closed) return;
++        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
++        try {
++            final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
++            NbtIo.write(compoundTag, new DataOutputStream(playerByteArrayOutputStream));
++            rocksDB.put(getBytesFromUuid(uuid), playerByteArrayOutputStream.toByteArray());
+         } catch (Exception exception) {
+-            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", player.getScoreboardName(), exception); // Paper
++            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
++        }
++    }
++
++    public void save(Player player) {
++        saveCompoundTag(player.getUUID(), player.saveWithoutId(new CompoundTag()));
++    }
++
++    private CompoundTag get(UUID uuid) throws RocksDBException, IOException {
++        if (closed) return null;
++        final byte[] playerCompoundTagBytes = rocksDB.get(getBytesFromUuid(uuid));
++        if (playerCompoundTagBytes == null) {
++            return null;
+         }
+ 
++        return NbtIo.read(new DataInputStream(new ByteArrayInputStream(playerCompoundTagBytes)));
+     }
+ 
+     @Nullable
+@@ -53,44 +166,12 @@ public class PlayerDataStorage {
+         CompoundTag nbttagcompound = null;
+ 
+         try {
+-            File file = new File(this.playerDir, player.getStringUUID() + ".dat");
+-            // Spigot Start
+-            boolean usingWrongFile = false;
+-            if ( org.bukkit.Bukkit.getOnlineMode() && !file.exists() ) // Paper - Check online mode first
+-            {
+-                file = new File( this.playerDir, java.util.UUID.nameUUIDFromBytes( ( "OfflinePlayer:" + player.getScoreboardName() ).getBytes( "UTF-8" ) ).toString() + ".dat");
+-                if ( file.exists() )
+-                {
+-                    usingWrongFile = true;
+-                    org.bukkit.Bukkit.getServer().getLogger().warning( "Using offline mode UUID file for player " + player.getScoreboardName() + " as it is the only copy we can find." );
+-                }
+-            }
+-            // Spigot End
+-
+-            if (file.exists() && file.isFile()) {
+-                nbttagcompound = NbtIo.readCompressed(file);
+-            }
+-            // Spigot Start
+-            if ( usingWrongFile )
+-            {
+-                file.renameTo( new File( file.getPath() + ".offline-read" ) );
+-            }
+-            // Spigot End
++            nbttagcompound = get(player.getUUID());
+         } catch (Exception exception) {
+             PlayerDataStorage.LOGGER.warn("Failed to load player data for {}", player.getName().getString());
+         }
+ 
+         if (nbttagcompound != null) {
+-            // CraftBukkit start
+-            if (player instanceof ServerPlayer) {
+-                CraftPlayer player1 = (CraftPlayer) player.getBukkitEntity();
+-                // Only update first played if it is older than the one we have
+-                long modified = new File(this.playerDir, player.getUUID().toString() + ".dat").lastModified();
+-                if (modified < player1.getFirstPlayed()) {
+-                    player1.setFirstPlayed(modified);
+-                }
+-            }
+-            // CraftBukkit end
+             int i = NbtUtils.getDataVersion(nbttagcompound, -1);
+ 
+             player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
+@@ -99,41 +180,27 @@ public class PlayerDataStorage {
+         return nbttagcompound;
+     }
+ 
+-    // CraftBukkit start
+-    public CompoundTag getPlayerData(String s) {
+-        try {
+-            File file1 = new File(this.playerDir, s + ".dat");
+ 
+-            if (file1.exists()) {
+-                return NbtIo.readCompressed((InputStream) (new FileInputStream(file1)));
+-            }
++    public CompoundTag getPlayerData(UUID uuid) {
++        try {
++            return get(uuid);
+         } catch (Exception exception) {
+-            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + s);
++            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
+         }
+ 
+         return null;
+     }
+-    // CraftBukkit end
+ 
+     public String[] getSeenPlayers() {
+-        String[] astring = this.playerDir.list();
+-
+-        if (astring == null) {
+-            astring = new String[0];
+-        }
+-
+-        for (int i = 0; i < astring.length; ++i) {
+-            if (astring[i].endsWith(".dat")) {
+-                astring[i] = astring[i].substring(0, astring[i].length() - 4);
++        if (closed) return new String[0];
++        final ArrayList<String> seenPlayers = new ArrayList<>();
++        try (RocksIterator it = rocksDB.newIterator()) {
++            for (it.seekToFirst(); it.isValid(); it.next()) {
++                seenPlayers.add(getUUIDFromBytes(it.key()).toString());
+             }
+         }
+ 
+-        return astring;
+-    }
+-
+-    // CraftBukkit start
+-    public File getPlayerDir() {
+-        return this.playerDir;
++        return seenPlayers.toArray(new String[0]);
+     }
+-    // CraftBukkit end
++    // TrueOG end
+ }
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java b/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java
+index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286049cfb98 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java
+@@ -1,7 +1,6 @@
+ package org.bukkit.craftbukkit;
+ 
+ import com.mojang.authlib.GameProfile;
+-import java.io.File;
+ import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -188,7 +187,7 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+     }
+ 
+     private CompoundTag getData() {
+-        return this.storage.getPlayerData(this.getUniqueId().toString());
++        return this.storage.getPlayerData(this.getUniqueId());
+     }
+ 
+     private CompoundTag getBukkitData() {
+@@ -204,10 +203,6 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+         return result;
+     }
+ 
+-    private File getDataFile() {
+-        return new File(this.storage.getPlayerDir(), this.getUniqueId() + ".dat");
+-    }
+-
+     @Override
+     public long getFirstPlayed() {
+         Player player = this.getPlayer();
+@@ -215,13 +210,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+ 
+         CompoundTag data = this.getBukkitData();
+ 
+-        if (data != null) {
+-            if (data.contains("firstPlayed")) {
+-                return data.getLong("firstPlayed");
+-            } else {
+-                File file = this.getDataFile();
+-                return file.lastModified();
+-            }
++        if (data != null && data.contains("firstPlayed")) { // TrueOG
++            return data.getLong("firstPlayed");
+         } else {
+             return 0;
+         }
+@@ -234,13 +224,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+ 
+         CompoundTag data = this.getBukkitData();
+ 
+-        if (data != null) {
+-            if (data.contains("lastPlayed")) {
+-                return data.getLong("lastPlayed");
+-            } else {
+-                File file = this.getDataFile();
+-                return file.lastModified();
+-            }
++        if (data != null && data.contains("lastPlayed")) { // TrueOG
++            return data.getLong("lastPlayed");
+         } else {
+             return 0;
+         }
+@@ -259,14 +244,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+ 
+         CompoundTag data = getPaperData();
+ 
+-        if (data != null) {
+-            if (data.contains("LastLogin")) {
+-                return data.getLong("LastLogin");
+-            } else {
+-                // if the player file cannot provide accurate data, this is probably the closest we can approximate
+-                File file = getDataFile();
+-                return file.lastModified();
+-            }
++        if (data != null && data.contains("LastLogin")) { // TrueOG
++            return data.getLong("LastLogin");
+         } else {
+             return 0;
+         }
+@@ -279,14 +258,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+ 
+         CompoundTag data = getPaperData();
+ 
+-        if (data != null) {
+-            if (data.contains("LastSeen")) {
+-                return data.getLong("LastSeen");
+-            } else {
+-                // if the player file cannot provide accurate data, this is probably the closest we can approximate
+-                File file = getDataFile();
+-                return file.lastModified();
+-            }
++        if (data != null && data.contains("LastSeen")) { // TrueOG
++            return data.getLong("LastSeen");
+         } else {
+             return 0;
+         }
+@@ -746,16 +719,7 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+      * @param compoundTag
+      */
+     private void save(CompoundTag compoundTag) {
+-        File playerDir = server.console.playerDataStorage.getPlayerDir();
+-        try {
+-            File tempFile = File.createTempFile(this.getUniqueId()+"-", ".dat", playerDir);
+-            net.minecraft.nbt.NbtIo.writeCompressed(compoundTag, tempFile);
+-            File playerDataFile = new File(playerDir, this.getUniqueId()+".dat");
+-            File playerDataFileOld = new File(playerDir, this.getUniqueId()+".dat_old");
+-            net.minecraft.Util.safeReplaceFile(playerDataFile, tempFile, playerDataFileOld);
+-        } catch (java.io.IOException e) {
+-            e.printStackTrace();
+-        }
++        storage.saveCompoundTag(this.getUniqueId(), compoundTag); // TrueOG
+     }
+     // Purpur end - OfflinePlayer API
+ }
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..cce3eb21545a0f6e3d5bed9308b9768185984e72 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -194,7 +194,6 @@ import org.bukkit.craftbukkit.util.CraftLocation;
+ import org.bukkit.craftbukkit.util.CraftMagicNumbers;
+ import org.bukkit.craftbukkit.util.CraftNamespacedKey;
+ import org.bukkit.craftbukkit.util.CraftSpawnCategory;
+-import org.bukkit.craftbukkit.util.DatFileFilter;
+ import org.bukkit.craftbukkit.util.Versioning;
+ import org.bukkit.craftbukkit.util.permissions.CraftDefaultPermissions;
+ import org.bukkit.entity.Entity;
+@@ -2126,16 +2125,17 @@ public final class CraftServer implements Server {
+     @Override
+     public OfflinePlayer[] getOfflinePlayers() {
+         PlayerDataStorage storage = console.playerDataStorage;
+-        String[] files = storage.getPlayerDir().list(new DatFileFilter());
+         Set<OfflinePlayer> players = new HashSet<OfflinePlayer>();
+ 
+-        for (String file : files) {
++        // TrueOG start
++        for (String uuid : storage.getSeenPlayers()) {
+             try {
+-                players.add(this.getOfflinePlayer(UUID.fromString(file.substring(0, file.length() - 4))));
++                players.add(this.getOfflinePlayer(UUID.fromString(uuid)));
+             } catch (IllegalArgumentException ex) {
+-                // Who knows what is in this directory, just ignore invalid files
++                // Ignore invalid UUIDs
+             }
+         }
++        // TrueOG end
+ 
+         players.addAll(this.getOnlinePlayers());
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/util/DatFileFilter.java b/src/main/java/org/bukkit/craftbukkit/util/DatFileFilter.java
+deleted file mode 100644
+index 66ff685d707961757de553515f634af21ec21f82..0000000000000000000000000000000000000000
+--- a/src/main/java/org/bukkit/craftbukkit/util/DatFileFilter.java
++++ /dev/null
+@@ -1,11 +0,0 @@
+-package org.bukkit.craftbukkit.util;
+-
+-import java.io.File;
+-import java.io.FilenameFilter;
+-
+-public class DatFileFilter implements FilenameFilter {
+-    @Override
+-    public boolean accept(File dir, String name) {
+-        return name.endsWith(".dat");
+-    }
+-}
