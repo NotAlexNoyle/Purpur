@@ -51,10 +51,10 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f65775798 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..5a2b0e2a638466ed138621fda6630e984863b4c9 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,48 +4,161 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,48 +4,158 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -80,6 +80,8 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 +import org.rocksdb.RocksDB;
 +import org.rocksdb.RocksDBException;
 +import org.rocksdb.RocksIterator;
++import org.rocksdb.WriteBatch;
++import org.rocksdb.WriteOptions;
 +import java.io.IOException;
 +import java.io.DataInputStream;
 +import java.io.DataOutputStream;
@@ -145,7 +147,10 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 +            PlayerDataStorage.LOGGER.warn("Failed to properly close player data", e);
 +        }
 +    }
-+
+ 
+-            NbtIo.writeCompressed(nbttagcompound, file);
+-            File file1 = new File(this.playerDir, player.getStringUUID() + ".dat");
+-            File file2 = new File(this.playerDir, player.getStringUUID() + ".dat_old");
 +    private static byte[] getBytesFromUuid(UUID uuid) {
 +        final ByteBuffer byteBuffer = ByteBuffer.wrap(new byte[16]);
 +        byteBuffer.putLong(uuid.getMostSignificantBits());
@@ -160,9 +165,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 +        return new UUID(mostSigBits, leastSigBits);
 +    }
  
--            NbtIo.writeCompressed(nbttagcompound, file);
--            File file1 = new File(this.playerDir, player.getStringUUID() + ".dat");
--            File file2 = new File(this.playerDir, player.getStringUUID() + ".dat_old");
+-            Util.safeReplaceFile(file1, file, file2);
 +    public void migrate(Path playerDir) {
 +        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
 +        final byte[] migratedKey = "migrated".getBytes(StandardCharsets.US_ASCII);
@@ -206,8 +209,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 +            throw new RuntimeException("Could not successfully migrate player data", e);
 +        }
 +    }
- 
--            Util.safeReplaceFile(file1, file, file2);
++
 +    public void saveCompoundTag(UUID uuid, CompoundTag compoundTag) {
 +        if (closed) return;
 +        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
@@ -218,25 +220,20 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
          } catch (Exception exception) {
 -            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", player.getScoreboardName(), exception); // Paper
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
-+        }
+         }
 +    }
 +
 +    public void save(Player player) {
 +        saveCompoundTag(player.getUUID(), player.saveWithoutId(new CompoundTag()));
 +    }
-+
-+    private CompoundTag get(UUID uuid) throws RocksDBException, IOException {
-+        if (closed) return null;
-+        final byte[] playerCompoundTagBytes = rocksDB.get(getBytesFromUuid(uuid));
-+        if (playerCompoundTagBytes == null) {
-+            return null;
-         }
  
-+        return NbtIo.read(new DataInputStream(new ByteArrayInputStream(playerCompoundTagBytes)));
++    private byte[] get(byte[] uuidBytes) throws RocksDBException {
++        if (closed) return null;
++        return rocksDB.get(uuidBytes);
      }
  
      @Nullable
-@@ -53,44 +166,12 @@ public class PlayerDataStorage {
+@@ -53,44 +163,30 @@ public class PlayerDataStorage {
          CompoundTag nbttagcompound = null;
  
          try {
@@ -244,16 +241,30 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 -            // Spigot Start
 -            boolean usingWrongFile = false;
 -            if ( org.bukkit.Bukkit.getOnlineMode() && !file.exists() ) // Paper - Check online mode first
--            {
++            byte[] playerUuidBytes = getBytesFromUuid(player.getUUID());
++            byte[] nbttagcompoundbytes = get(playerUuidBytes);
++
++            if ( nbttagcompoundbytes == null && org.bukkit.Bukkit.getOnlineMode() ) // Paper - Check online mode first
+             {
 -                file = new File( this.playerDir, java.util.UUID.nameUUIDFromBytes( ( "OfflinePlayer:" + player.getScoreboardName() ).getBytes( "UTF-8" ) ).toString() + ".dat");
 -                if ( file.exists() )
 -                {
 -                    usingWrongFile = true;
 -                    org.bukkit.Bukkit.getServer().getLogger().warning( "Using offline mode UUID file for player " + player.getScoreboardName() + " as it is the only copy we can find." );
--                }
--            }
++                byte[] offlineUuidBytes = getBytesFromUuid(java.util.UUID.nameUUIDFromBytes( ( "OfflinePlayer:" + player.getScoreboardName() ).getBytes( "UTF-8" )));
++                nbttagcompoundbytes = get(offlineUuidBytes);
++                if (nbttagcompoundbytes == null) return null;
++
++                try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
++                    batch.put(playerUuidBytes, nbttagcompoundbytes);
++                    batch.delete(offlineUuidBytes);
++
++                    rocksDB.write(options, batch);
+                 }
++                org.bukkit.Bukkit.getServer().getLogger().warning( "Using offline mode UUID file for player " + player.getScoreboardName() + " as it is the only copy we can find." );
+             }
 -            // Spigot End
--
+ 
 -            if (file.exists() && file.isFile()) {
 -                nbttagcompound = NbtIo.readCompressed(file);
 -            }
@@ -263,7 +274,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 -                file.renameTo( new File( file.getPath() + ".offline-read" ) );
 -            }
 -            // Spigot End
-+            nbttagcompound = get(player.getUUID());
++            nbttagcompound = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbttagcompoundbytes)));
          } catch (Exception exception) {
              PlayerDataStorage.LOGGER.warn("Failed to load player data for {}", player.getName().getString());
          }
@@ -282,7 +293,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +180,27 @@ public class PlayerDataStorage {
+@@ -99,41 +195,29 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
@@ -296,7 +307,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 -            }
 +    public CompoundTag getPlayerData(UUID uuid) {
 +        try {
-+            return get(uuid);
++            return NbtIo.read(new DataInputStream(new ByteArrayInputStream(get(getBytesFromUuid(uuid)))));
          } catch (Exception exception) {
 -            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + s);
 +            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
@@ -320,7 +331,9 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..374a18bc45b9a2dfa69633dc640b0d2f
 +        final ArrayList<String> seenPlayers = new ArrayList<>();
 +        try (RocksIterator it = rocksDB.newIterator()) {
 +            for (it.seekToFirst(); it.isValid(); it.next()) {
-+                seenPlayers.add(getUUIDFromBytes(it.key()).toString());
++                byte[] key = it.key();
++                if (key.length != 16) continue;
++                seenPlayers.add(getUUIDFromBytes(key).toString());
              }
          }
  
