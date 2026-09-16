@@ -23,19 +23,14 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 
 ## Changes over mainline Purpur
 
-- Prevents pufferfish.yml, purpur.yml, server.properties, config/paper-world.yml, config/paper-world-defaults.yml, and config/paper-global.yml from being written to by the server. Skipped writes are logged. Consequences: a fresh install never generates these files and fails at world creation with `IllegalStateException: World defaults configuration file ... doesn't exist` until at least `config/paper-world-defaults.yml` is copied in from a mainline Purpur run, new upstream config keys never appear in existing files (defaults apply), legacy paper.yml is never auto-converted, and `/whitelist on|off` only lasts until restart because it is persisted through server.properties.
+- Prevents the server from overwriting an existing pufferfish.yml.
+- Prevents the server from writing to config files (purpur.yml, server.properties, config/paper-global.yml, config/paper-world-defaults.yml, config/paper-world.yml).
 - Suppresses "lost connection" messages from the console.
-- Keeps the chunk loaded while a zombie villager is being cured, using a per-entity chunk ticket (not `/forceload`, not persisted). Covers cures started by plugins/API, follows the zombie villager if it moves chunks, survives a restart mid-cure, and is released on death, despawn, `/kill`, portal trips, cross-world teleports, and cancelled conversions. The ticket expires 20 seconds after the zombie villager stops ticking, so no removal path can leak it for longer than that. Gameplay is otherwise vanilla: the zombie villager keeps its AI during the cure. Zombie villagers saved mid-cure by older builds of this patch (which disabled AI and used `/forceload`) get their AI back and their chunk un-forced when they load; chunks force-loaded by a cure that was killed off under those builds are not tracked and stay in `/forceload query` until removed by hand.
+- Keeps chunks loaded while a zombie villager is being cured.
 
 EXPERIMENTAL (may break things):
 
-- Stores player data in a RocksDB database at `<world>/playerdatadb` instead of one `.dat` file per player. Existing `playerdata/*.dat` files are migrated on first start, then the old directory is renamed to `playerdatamigrated`. `OfflinePlayer` timestamps and `Bukkit.getOfflinePlayers()` read from the database. Why experimental:
-  - Conflicts with MyWorlds/BKCommonLib: with `useWorldInventories` on, MyWorlds reads and writes `world/playerdata/<uuid>.dat` itself through a `PlayerDataStorage` hook. The migration renames that directory before plugins load, so every player's main-group inventory appears empty, and online saves never reach the database afterwards, so `OfflinePlayer` data goes stale.
-  - Migration is all-or-nothing: one leftover temp file or corrupt `.dat` in `playerdata` aborts server start on every boot until it is removed by hand.
-  - No `.dat_old` copies are kept and there is no export back to `.dat`, so downgrading to mainline Purpur loses every change since the migration.
-  - `OfflinePlayer` first/last-played fall back to 0 instead of the file's modification time when the NBT keys are missing.
-  - Adds a native dependency (`rocksdbjni`); saves after shutdown begins are silently dropped.
-  - Also exposes per-world storage (`saveCompoundTagCustom`/`getPlayerDataCustom` on `PlayerDataStorage`, NMS only, no Bukkit API). Reading a world name that has no data creates a column family that is never removed, and calling `getPlayerDataCustom` after the server has started shutting down segfaults the JVM.
+- Saves player data in a RocksDB database instead of `.dat` files.
 
 ## Downloads
 Downloads can be obtained from the [downloads page](https://purpurmc.org/downloads/) or the [downloads API](https://api.purpurmc.org).
