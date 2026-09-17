@@ -51,10 +51,10 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..7f52e7706329ceabc2c6aa73c47a8b13c475f993 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..a90ab4ca6c38a2295f0b72a9b378c16a72139a29 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,48 +4,230 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,48 +4,231 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -188,6 +188,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..7f52e7706329ceabc2c6aa73c47a8b13
 +    }
 +
 +    private ColumnFamilyHandle getOrCreateWorldColumnFamily(String world) {
++        if (closed) return null;
 +        String worldName = "world:" + world;
 +        return worldHandles.computeIfAbsent(worldName, key -> {
 +            ColumnFamilyHandle handle = null;
@@ -304,7 +305,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..7f52e7706329ceabc2c6aa73c47a8b13
      }
  
      @Nullable
-@@ -53,44 +235,34 @@ public class PlayerDataStorage {
+@@ -53,44 +236,34 @@ public class PlayerDataStorage {
          CompoundTag nbttagcompound = null;
  
          try {
@@ -368,7 +369,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..7f52e7706329ceabc2c6aa73c47a8b13
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +271,43 @@ public class PlayerDataStorage {
+@@ -99,41 +272,45 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
@@ -401,7 +402,9 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..7f52e7706329ceabc2c6aa73c47a8b13
 -            astring = new String[0];
 +    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
 +        try {
-+            byte[] data = get(getOrCreateWorldColumnFamily(world), getBytesFromUuid(uuid));
++            ColumnFamilyHandle handle = getOrCreateWorldColumnFamily(world);
++            if (handle == null) return null;
++            byte[] data = get(handle, getBytesFromUuid(uuid));
 +            if (data == null) return null;
 +            return NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
 +        } catch (Exception exception) {
