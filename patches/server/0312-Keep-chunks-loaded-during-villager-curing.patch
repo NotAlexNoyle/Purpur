@@ -14,12 +14,16 @@ the last refresh, which bounds every removal path that bypasses
 remove() (portal trips, cross-world /tp, UNLOADED_WITH_PLAYER, chunk
 unload, duplicate-UUID regen). Known paths release it immediately.
 
+On a dimension change or cross-world teleport the replacement entity's
+NBT replay takes a ticket at the source coordinates before it is moved;
+restoreFrom drops that ticket and setPos takes one at the final position.
+
 Zombie villagers saved mid-cure by earlier builds of this patch, which
 disabled AI and used /forceload, get their AI back and their chunk
 un-forced on load.
 
 diff --git a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
-index 0c6e8e05014125427513e96c32510125ec34ece9..5e3b8fdfc70f5421b4e683e0b14246d709557f61 100644
+index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10ac2519f2 100644
 --- a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
 +++ b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
 @@ -21,6 +21,7 @@ import net.minecraft.world.InteractionResult;
@@ -100,7 +104,7 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..5e3b8fdfc70f5421b4e683e0b14246d7
              int i = this.getConversionProgress();
              // CraftBukkit start - Use wall time instead of ticks for villager conversion
              int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
-@@ -210,7 +239,65 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+@@ -210,7 +239,73 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
  
          super.tick();
          this.lastTick = MinecraftServer.currentTick; // CraftBukkit
@@ -122,9 +126,17 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..5e3b8fdfc70f5421b4e683e0b14246d7
 +    @Override
 +    public void setPos(double x, double y, double z) {
 +        super.setPos(x, y, z);
-+        if (this.conversionTicketChunk != null && !this.conversionTicketChunk.equals(this.chunkPosition())) {
-+            this.updateConversionTicket(); // follow the entity when physics, vehicles, or plugins move it across a chunk border
++        if (this.conversionTicketChunk == null ? this.isConverting() : !this.conversionTicketChunk.equals(this.chunkPosition())) {
++            this.updateConversionTicket(); // follow the entity when physics, vehicles, or plugins move it across a chunk border, or take the ticket restoreFrom dropped once moveTo places the entity
 +        }
++    }
++
++    @Override
++    public void restoreFrom(Entity original) {
++        super.restoreFrom(original);
++        // load() replayed startConverting at the source-world coordinates before changeDimension/teleportTo call moveTo,
++        // so the ticket is in the wrong chunk of the destination world; drop it and let moveTo -> setPos take the right one
++        this.releaseConversionTicket();
 +    }
 +
 +    @Override
@@ -166,7 +178,7 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..5e3b8fdfc70f5421b4e683e0b14246d7
  
      @Override
      public InteractionResult mobInteract(Player player, InteractionHand hand) {
-@@ -263,6 +350,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+@@ -263,6 +358,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
          this.removeEffect(MobEffects.WEAKNESS, org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
          this.addEffect(new MobEffectInstance(MobEffects.DAMAGE_BOOST, delay, Math.min(this.level.getDifficulty().getId() - 1, 0)), org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
          // CraftBukkit end
@@ -174,7 +186,7 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..5e3b8fdfc70f5421b4e683e0b14246d7
          if (broadcastEntityEvent) this.level.broadcastEntityEvent(this, (byte) 16); // Paper - missing entity behaviour api - converting without entity event
      }
  
-@@ -279,6 +367,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+@@ -279,6 +375,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
      }
  
      private void finishConversion(ServerLevel world) {

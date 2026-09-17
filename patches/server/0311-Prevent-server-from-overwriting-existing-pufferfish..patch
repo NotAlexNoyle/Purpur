@@ -5,24 +5,21 @@ Subject: [PATCH] Prevent server from overwriting existing pufferfish.yml
 
 
 diff --git a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
-index b4e5fbace85c67e7bd347e6a90514bbc2c132d5e..99befcb612e48eddaebb4f0814f9f88bcbf9d761 100644
+index b4e5fbace85c67e7bd347e6a90514bbc2c132d5e..752b85ba71bfee9e4d04a7a750028134ed861ba1 100644
 --- a/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
 +++ b/src/main/java/gg/pufferfish/pufferfish/PufferfishConfig.java
-@@ -52,7 +52,12 @@ public class PufferfishConfig {
+@@ -52,22 +52,23 @@ public class PufferfishConfig {
  	
  	public static void load() throws IOException {
  		File configFile = pufferfishFile; // Purpur
 -		
+-		if (configFile.exists()) {
 +
-+		boolean newlyCreated = false;
-+		if (!configFile.exists()) {
-+			newlyCreated = true;
-+		}
-+
- 		if (configFile.exists()) {
++		boolean newlyCreated = !configFile.exists();
++		if (!newlyCreated) {
  			try {
  				config.load(configFile);
-@@ -60,14 +65,14 @@ public class PufferfishConfig {
+ 			} catch (InvalidConfigurationException e) {
  				throw new IOException(e);
  			}
  		}
@@ -39,7 +36,7 @@ index b4e5fbace85c67e7bd347e6a90514bbc2c132d5e..99befcb612e48eddaebb4f0814f9f88b
  		for (Method method : PufferfishConfig.class.getDeclaredMethods()) {
  			if (Modifier.isStatic(method.getModifiers()) && Modifier.isPrivate(method.getModifiers()) && method.getParameterCount() == 0 &&
  					method.getReturnType() == Void.TYPE && !method.getName().startsWith("lambda")) {
-@@ -79,19 +84,20 @@ public class PufferfishConfig {
+@@ -79,19 +80,20 @@ public class PufferfishConfig {
  				}
  			}
  		}

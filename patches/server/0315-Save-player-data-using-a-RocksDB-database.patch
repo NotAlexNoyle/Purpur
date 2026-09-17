@@ -18,7 +18,7 @@ index 9c01005751c0088f560f96401cdfdebbbda4e7ec..4d2e77efc362c1f14209e7e51b5ac151
      implementation("org.mozilla:rhino-engine:1.7.14") // Purpur
      implementation("dev.omega24:upnp4j:1.0") // Purpur
 diff --git a/src/main/java/net/minecraft/server/Main.java b/src/main/java/net/minecraft/server/Main.java
-index cdbf10339a8e8846a8c364de483a0ccd95cd225a..0d725fb135088578f4218f23c40c35f7e621f9da 100644
+index e4f92a0237e08c6a07da2b1c73de38c1acb20653..f1d7bb89fb8f02f120f9abfff5759668fc4de62c 100644
 --- a/src/main/java/net/minecraft/server/Main.java
 +++ b/src/main/java/net/minecraft/server/Main.java
 @@ -73,6 +73,8 @@ import net.minecraft.SharedConstants;
@@ -563,7 +563,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
      // Purpur end - OfflinePlayer API
  }
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..cce3eb21545a0f6e3d5bed9308b9768185984e72 100644
+index 01137e7000bd24f80f329aa577e606db52fd9e3c..4c23ae1a88962d925223b0e773bfcb2a8899f20e 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 @@ -194,7 +194,6 @@ import org.bukkit.craftbukkit.util.CraftLocation;
@@ -574,7 +574,7 @@ index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..cce3eb21545a0f6e3d5bed9308b97681
  import org.bukkit.craftbukkit.util.Versioning;
  import org.bukkit.craftbukkit.util.permissions.CraftDefaultPermissions;
  import org.bukkit.entity.Entity;
-@@ -2126,16 +2125,17 @@ public final class CraftServer implements Server {
+@@ -2134,16 +2133,17 @@ public final class CraftServer implements Server {
      @Override
      public OfflinePlayer[] getOfflinePlayers() {
          PlayerDataStorage storage = console.playerDataStorage;
