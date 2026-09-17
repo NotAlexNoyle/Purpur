@@ -23,14 +23,13 @@ Purpur is a drop-in replacement for [Paper](https://github.com/PaperMC/Paper) se
 
 ## Changes over mainline Purpur
 
-- Prevents the server from overwriting an existing pufferfish.yml.
-- Prevents the server from rewriting existing config files (server.properties, bukkit.yml, commands.yml, spigot.yml, purpur.yml, config/paper-global.yml, config/paper-world-defaults.yml, per-world paper-world.yml). A missing file is still generated with defaults. Changes vanilla would save to server.properties (`/whitelist on|off`, `/setidletimeout`) last until the next restart; `/whitelist` says so.
-- Suppresses "lost connection" messages from the console.
+- Never rewrites existing config files (server.properties, bukkit.yml, commands.yml, spigot.yml, pufferfish.yml, purpur.yml, and the Paper configs). Missing files are still created with defaults. Commands that vanilla would save to server.properties (`/whitelist on|off`, `/setidletimeout`) only last until restart.
+- Hides "lost connection" messages in the console.
 - Keeps chunks loaded while a zombie villager is being cured.
 
 EXPERIMENTAL (may break things):
 
-- Saves player data in a RocksDB database instead of `.dat` files.
+- Stores player data in RocksDB instead of `.dat` files.
 
 ## Downloads
 Downloads can be obtained from the [downloads page](https://purpurmc.org/downloads/) or the [downloads API](https://api.purpurmc.org).
