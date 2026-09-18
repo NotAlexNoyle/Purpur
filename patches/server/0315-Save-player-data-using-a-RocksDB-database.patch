@@ -51,10 +51,10 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e83346f68c3f 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363de0886e4 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,48 +4,248 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,48 +4,244 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -264,11 +264,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
 +                throw new RuntimeException("Could not migrate player data of one or more players");
 +            }
 +            rocksDB.put(migratedKey, new byte[0]);
-+            Path target = playerDir.resolveSibling(playerDir.getFileName() + "migrated");
-+            if (Files.exists(target)) {
-+                target = playerDir.resolveSibling(playerDir.getFileName() + "migrated-" + System.currentTimeMillis());
-+            }
-+            Files.move(playerDir, target);
++            Files.move(playerDir, playerDir.resolveSibling(playerDir.getFileName() + "migrated"));
 +            PlayerDataStorage.LOGGER.info("Migrated player data");
 +        } catch (IOException | RocksDBException e) {
 +            PlayerDataStorage.LOGGER.warn("Failed to migrate player data", e);
@@ -290,8 +286,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
 +        }
 +    }
- 
--            Util.safeReplaceFile(file1, file, file2);
++
 +    public void saveCompoundTagCustom(String world, UUID uuid, CompoundTag compoundTag) {
 +        if (closed) return;
 +        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return;
@@ -299,30 +294,31 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
 +            final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
 +            NbtIo.write(compoundTag, new DataOutputStream(playerByteArrayOutputStream));
 +            rocksDB.put(getOrCreateWorldColumnFamily(world), getBytesFromUuid(uuid), playerByteArrayOutputStream.toByteArray());
-         } catch (Exception exception) {
--            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", player.getScoreboardName(), exception); // Paper
++        } catch (Exception exception) {
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
-         }
++        }
 +    }
  
+-            Util.safeReplaceFile(file1, file, file2);
 +    public void save(Player player) {
 +        CompoundTag playerData;
 +        try {
 +            playerData = player.saveWithoutId(new CompoundTag());
-+        } catch (Exception exception) {
+         } catch (Exception exception) {
+-            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", player.getScoreboardName(), exception); // Paper
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", player.getScoreboardName(), exception);
 +            return;
-+        }
+         }
 +        saveCompoundTag(player.getUUID(), playerData);
 +    }
-+
+ 
 +    private byte[] get(ColumnFamilyHandle columnFamilyHandle, byte[] uuidBytes) throws RocksDBException {
 +        if (closed) return null;
 +        return rocksDB.get(columnFamilyHandle, uuidBytes);
      }
  
      @Nullable
-@@ -53,44 +253,34 @@ public class PlayerDataStorage {
+@@ -53,44 +249,34 @@ public class PlayerDataStorage {
          CompoundTag nbttagcompound = null;
  
          try {
@@ -386,36 +382,21 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +289,85 @@ public class PlayerDataStorage {
+@@ -99,41 +285,80 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
 -    // CraftBukkit start
 -    public CompoundTag getPlayerData(String s) {
-+
-+    public CompoundTag getPlayerData(UUID uuid) {
-         try {
+-        try {
 -            File file1 = new File(this.playerDir, s + ".dat");
-+            byte[] data = get(defaultColumnFamily, getBytesFromUuid(uuid));
-+            if (data == null) return null;
-+            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
-+            int i = NbtUtils.getDataVersion(playerData, -1);
-+            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
-+        } catch (Exception exception) {
-+            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
-+        }
  
 -            if (file1.exists()) {
 -                return NbtIo.readCompressed((InputStream) (new FileInputStream(file1)));
 -            }
-+        return null;
-+    }
-+
-+    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
++    public CompoundTag getPlayerData(UUID uuid) {
 +        try {
-+            ColumnFamilyHandle handle = getWorldColumnFamily(world);
-+            if (handle == null) return null;
-+            byte[] data = get(handle, getBytesFromUuid(uuid));
++            byte[] data = get(defaultColumnFamily, getBytesFromUuid(uuid));
 +            if (data == null) return null;
 +            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
 +            int i = NbtUtils.getDataVersion(playerData, -1);
@@ -428,34 +409,35 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
          return null;
      }
 -    // CraftBukkit end
- 
-     public String[] getSeenPlayers() {
--        String[] astring = this.playerDir.list();
 -
+-    public String[] getSeenPlayers() {
+-        String[] astring = this.playerDir.list();
+ 
 -        if (astring == null) {
 -            astring = new String[0];
-+        if (closed) return new String[0];
-+        final ArrayList<String> seenPlayers = new ArrayList<>();
-+        try (RocksIterator it = rocksDB.newIterator()) {
-+            for (it.seekToFirst(); it.isValid(); it.next()) {
-+                byte[] key = it.key();
-+                if (key.length != 16) continue;
-+                seenPlayers.add(getUUIDFromBytes(key).toString());
-+            }
++    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
++        try {
++            ColumnFamilyHandle handle = getWorldColumnFamily(world);
++            if (handle == null) return null;
++            byte[] data = get(handle, getBytesFromUuid(uuid));
++            if (data == null) return null;
++            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
++            int i = NbtUtils.getDataVersion(playerData, -1);
++            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
++        } catch (Exception exception) {
++            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
          }
  
 -        for (int i = 0; i < astring.length; ++i) {
 -            if (astring[i].endsWith(".dat")) {
 -                astring[i] = astring[i].substring(0, astring[i].length() - 4);
-+        return seenPlayers.toArray(new String[0]);
++        return null;
 +    }
 +
-+    public String[] getSeenPlayersCustom(String world) {
++    private String[] getAllPlayers(ColumnFamilyHandle columnFamilyHandle) {
 +        if (closed) return new String[0];
-+        ColumnFamilyHandle handle = getWorldColumnFamily(world);
-+        if (handle == null) return new String[0];
 +        final ArrayList<String> seenPlayers = new ArrayList<>();
-+        try (RocksIterator it = rocksDB.newIterator(handle)) {
++        try (RocksIterator it = rocksDB.newIterator(columnFamilyHandle)) {
 +            for (it.seekToFirst(); it.isValid(); it.next()) {
 +                byte[] key = it.key();
 +                if (key.length != 16) continue;
@@ -470,11 +452,22 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
 -    // CraftBukkit start
 -    public File getPlayerDir() {
 -        return this.playerDir;
++    public String[] getSeenPlayers() {
++        return getAllPlayers(defaultColumnFamily);
++    }
++
++    public String[] getSeenPlayersCustom(String world) {
++        if (closed) return new String[0];
++        ColumnFamilyHandle handle = getWorldColumnFamily(world);
++        if (handle == null) return new String[0];
++        return getAllPlayers(handle);
++    }
++
 +    public boolean hasPlayerData(UUID uuid) {
 +        try {
 +            return get(defaultColumnFamily, getBytesFromUuid(uuid)) != null;
 +        } catch (RocksDBException e) {
-+            PlayerDataStorage.LOGGER.warn("Failed to check player data for {}", uuid, e);
++            PlayerDataStorage.LOGGER.warn("Failed to check player data for {}", uuid);
 +            return false;
 +        }
 +    }
@@ -485,7 +478,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..4017610cb7283fa58d6c69899cd3e833
 +        try {
 +            return get(handle, getBytesFromUuid(uuid)) != null;
 +        } catch (RocksDBException e) {
-+            PlayerDataStorage.LOGGER.warn("Failed to check player data for {} on world {}", uuid, world, e);
++            PlayerDataStorage.LOGGER.warn("Failed to check player data for {} on world {}", uuid, world);
 +            return false;
 +        }
      }
