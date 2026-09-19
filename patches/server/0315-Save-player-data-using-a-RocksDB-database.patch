@@ -244,10 +244,10 @@ index 0000000000000000000000000000000000000000..b7ecd38ad1fc60b6476365e61c2d31a7
 +}
 +// TrueOG end
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf2352e2a8787 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..b8da95240a0ad9a72ad2868c3f9f303912161451 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,136 +4,446 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,136 +4,440 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -310,8 +310,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf235
 +    private ColumnFamilyHandle defaultColumnFamily;
 +    private final ConcurrentMap<String, ColumnFamilyHandle> worldHandles = new ConcurrentHashMap<>();
 +    private volatile boolean closed = false;
-+    // Readers hold the read lock for the whole resolve-and-use of a handle. dropWorld and close take
-+    // the write lock, so a handle is never freed while another thread is still using it.
++    // Readers hold the read lock across resolve and use of a handle; dropWorld and close take the write lock, so a handle is never freed under a live reader.
 +    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 +    // The server's own level name. It aliases the default storage, see resolveColumnFamily.
 +    private final String defaultWorldName;
@@ -479,8 +478,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf235
 +        return !closed && !org.spigotmc.SpigotConfig.disablePlayerDataSaving; // Spigot
 +    }
 +
-+    // Runs op under the read lock. Every use of a handle returned by resolveColumnFamily must
-+    // happen inside one of these, so dropWorld and close can not free it half way through.
++    // Runs op under the read lock. Every use of a handle from resolveColumnFamily must happen inside one, so dropWorld and close can not free it half way through.
 +    <T> T withRead(Supplier<T> op) {
 +        lock.readLock().lock();
          try {
@@ -501,8 +499,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf235
 +        }
 +    }
 +
-+    // Null and the server's own level name both address the default storage, so a plugin that
-+    // passes the main world by name does not end up with a second copy of vanilla's data.
++    // Null and the server's own level name both address the default storage, so passing the main world by name does not create a second copy of vanilla's data.
 +    boolean isDefault(@Nullable String world) {
 +        return world == null || world.equals(defaultWorldName);
 +    }
@@ -511,8 +508,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf235
 +        return isDefault(a) ? isDefault(b) : a.equals(b);
 +    }
 +
-+    // With create, a world's column family is made on first use. Null when closed, or when the
-+    // world is unknown and create is false. Caller must hold the read lock, see withRead.
++    // With create, a world's column family is made on first use. Null when closed, or when the world is unknown and create is false. Caller must hold the read lock, see withRead.
 +    @Nullable
 +    ColumnFamilyHandle resolveColumnFamily(@Nullable String world, boolean create) {
 +        if (closed) return null;
@@ -563,8 +559,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf235
 +        return players;
 +    }
 +
-+    // Drops a world's column family. The default column family is never dropped. Takes the write
-+    // lock, so no reader can be left holding the handle when it is closed.
++    // Drops a world's column family, never the default one. Takes the write lock so no reader is left holding the handle when it is closed.
 +    boolean dropWorld(String world) {
 +        lock.writeLock().lock();
 +        try {
@@ -677,8 +672,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..c89f0a2078c5377550b9b19061acf235
 +        }
 +    }
 +
-+    // Vanilla and CraftBukkit contracts. These only address the default storage and keep the
-+    // original signatures and error handling; plugins use PlayerDataApi instead.
++    // Vanilla and CraftBukkit contracts. These only address the default storage and keep the original signatures and error handling; plugins use PlayerDataApi instead.
  
 -            if (file1.exists()) {
 -                return NbtIo.readCompressed((InputStream) (new FileInputStream(file1)));
